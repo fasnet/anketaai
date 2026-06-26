@@ -9,10 +9,11 @@ const VSEGPT_API_URL = 'https://api.vsegpt.ru:7090/v1/chat/completions';
 const VSEGPT_MODEL   = 'gpt-4o-mini';
 const AI_HINTS_FILE   = __DIR__ . '/ai_hints.json';
 const PATIENT_RESPONSES_FILE = __DIR__ . '/patient_responses.json';
-const RNOVA_API_URL = '';
+const RNOVA_API_URL = 'https://app.rnova.org/api/public/';
 const RNOVA_API_TOKEN = '';
 const RNOVA_ADMIN_ROLE_ID = 12460;
 const RNOVA_EMPLOYEE_ID = 50256;
+const PAYMENT_REQUIRED = 'Y';
 
 /*
   Настройки оплаты Prodamus
@@ -96,6 +97,10 @@ function prodamus_signature($data, $secretKey) {
     }
     $json = str_replace('/', '\\/', $json);
     return base64_encode(hash_hmac('sha256', $json, (string)$secretKey, true));
+}
+
+function is_payment_required() {
+    return strtoupper(trim((string)PAYMENT_REQUIRED)) === 'Y';
 }
 
 function prodamus_payment_url($orderId, $patient) {
@@ -2193,7 +2198,7 @@ $listItems = questionnaire_list_items($sections);
         </div>
     </div>
 
-    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>">
+    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>">
         <input type="hidden" name="action" value="analyze">
         <input type="hidden" name="filled_at" value="<?= e(date('Y-m-d')) ?>">
 
@@ -2507,25 +2512,57 @@ $listItems = questionnaire_list_items($sections);
         sexInputs.forEach(el => el.addEventListener('change', toggleSexBlocks));
         toggleSexBlocks();
 
-        form.addEventListener('submit', (ev) => {
+        form.addEventListener('submit', async (ev) => {
             ev.preventDefault();
+            const paymentRequired = (form.dataset.paymentRequired || 'Y').toUpperCase() === 'Y';
             const paymentUrl = form.dataset.paymentUrl || '';
-            if (!paymentUrl) {
-                if (result) {
-                    result.style.display = 'block';
-                    result.innerHTML = '<div class="error">Не настроена ссылка оплаты Prodamus.</div>';
+
+            if (paymentRequired) {
+                if (!paymentUrl) {
+                    if (result) {
+                        result.style.display = 'block';
+                        result.innerHTML = '<div class="error">Не настроена ссылка оплаты Prodamus.</div>';
+                    }
+                    return;
                 }
+                savePendingSurvey();
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Ожидание перехода к оплате';
+                openSuccessModal({
+                    title: 'Для анализа анкеты необходимо ее оплатить',
+                    text: 'Нажмите кнопку ниже, чтобы открыть защищенную страницу оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
+                    paymentUrl,
+                    paymentButtonText: 'Перейти к оплате 3000 ₽'
+                });
                 return;
             }
-            savePendingSurvey();
+
+            const fd = new FormData(form);
+            if (!fd.has('action')) fd.append('action', 'analyze');
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Ожидание перехода к оплате';
-            openSuccessModal({
-                title: 'Для анализа анкеты необходимо ее оплатить',
-                text: 'Нажмите кнопку ниже, чтобы открыть защищенную страницу оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
-                paymentUrl,
-                paymentButtonText: 'Перейти к оплате 3000 ₽'
-            });
+            submitBtn.textContent = 'Отправляем анкету';
+            if (result) {
+                result.style.display = 'block';
+                result.innerHTML = '<div class="muted">Отправляем анкету на анализ ИИ без оплаты...</div>';
+            }
+
+            try {
+                const res = await fetch(location.pathname + '?page=form', {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
+                openSuccessModal({
+                    title: 'Анкета успешно отправлена',
+                    text: 'Оплата отключена для тестирования, анкета отправлена на анализ ИИ.'
+                });
+                if (result) result.innerHTML = `<div class="success">${escapeHtml(data.message || 'Анкета успешно отправлена.')}</div>`;
+                form.reset();
+                updateProgress();
+            } catch (err) {
+                if (result) result.innerHTML = `<div class="error">${escapeHtml(err.message || 'Не удалось отправить анкету.')}</div>`;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'ОТПРАВИТЬ АНКЕТУ';
+            }
         });
     }
 
