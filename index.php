@@ -15,6 +15,9 @@ $bitrixStageId = getenv('BITRIX24_STAGE_ID') ?: '';
 $prodamusSecretKey = getenv('PRODAMUS_SECRET_KEY') ?: 'secretKey';
 $prodamusLinkToForm = getenv('PRODAMUS_LINK_TO_FORM') ?: 'https://adaptogenzzclinic.payform.ru/';
 $prodamusShopId = getenv('PRODAMUS_SHOP_ID') ?: 'adaptogenzzclinic';
+$prodamusProductName = getenv('PRODAMUS_PRODUCT_NAME') ?: 'Анкета здоровья';
+$prodamusProductPrice = (int) (getenv('PRODAMUS_PRODUCT_PRICE') ?: 3000);
+$prodamusProductQuantity = (int) (getenv('PRODAMUS_PRODUCT_QUANTITY') ?: 1);
 
 function current_page_url(array $query = []): string {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
@@ -201,9 +204,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'sys' => $GLOBALS['prodamusShopId'],
         'products' => [
             [
-                'name' => 'Анкета здоровья',
-                'price' => 3000,
-                'quantity' => 1,
+                'name' => $GLOBALS['prodamusProductName'],
+                'price' => $GLOBALS['prodamusProductPrice'],
+                'quantity' => $GLOBALS['prodamusProductQuantity'],
             ],
         ],
     ];
@@ -212,6 +215,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'success' => true,
         'message' => 'Для анализа анкеты необходимо оплатить услугу.',
         'paymentUrl' => prodamus_payment_url($paymentData, $GLOBALS['prodamusSecretKey'], $GLOBALS['prodamusLinkToForm']),
+        'payment' => [
+            'name' => $GLOBALS['prodamusProductName'],
+            'price' => $GLOBALS['prodamusProductPrice'],
+            'quantity' => $GLOBALS['prodamusProductQuantity'],
+        ],
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -248,6 +256,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .modal-card { width:min(460px,100%); padding:34px; border-radius:22px; background:#fff; text-align:center; box-shadow:0 20px 70px rgba(0,0,0,.24); }
         .modal-card h2 { margin:0 0 12px; color:var(--accent); font-size:28px; }
         .modal-card p { margin:0 0 24px; font-size:17px; line-height:1.45; }
+        .payment-summary { display:none; margin:0 0 22px; padding:14px 16px; border-radius:16px; background:#eef8fb; color:#123; text-align:left; }
+        .payment-summary.is-visible { display:block; }
+        .payment-summary__title { margin:0 0 6px; color:var(--accent); font-size:14px; font-weight:700; text-transform:uppercase; }
+        .payment-summary__line { margin:0; font-size:16px; line-height:1.4; }
+        .payment-summary__price { font-weight:700; }
         .modal-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
         .modal-card button, .modal-card a { border:0; border-radius:22px; background:var(--accent); color:#fff; padding:13px 28px; font-weight:700; cursor:pointer; text-decoration:none; font-size:14px; }
         .modal-card .secondary { background:#d9eef4; color:var(--accent); }
@@ -295,6 +308,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="modal-card">
         <h2 id="modalTitle">Успешно отправлено</h2>
         <p id="modalText">Анкета успешно отправлена. Спасибо!</p>
+        <div class="payment-summary" id="paymentSummary" aria-live="polite">
+            <p class="payment-summary__title">К оплате</p>
+            <p class="payment-summary__line"><span id="paymentName">Анкета здоровья</span> × <span id="paymentQuantity">1</span></p>
+            <p class="payment-summary__line payment-summary__price"><span id="paymentPrice">3000</span> ₽</p>
+        </div>
         <div class="modal-actions">
             <a href="#" id="modalPay" style="display:none">Оплатить</a>
             <button type="button" id="modalClose" class="secondary">Закрыть</button>
@@ -309,11 +327,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     const modalText = document.getElementById('modalText');
     const modalClose = document.getElementById('modalClose');
     const modalPay = document.getElementById('modalPay');
+    const paymentSummary = document.getElementById('paymentSummary');
+    const paymentName = document.getElementById('paymentName');
+    const paymentQuantity = document.getElementById('paymentQuantity');
+    const paymentPrice = document.getElementById('paymentPrice');
     const submitButton = form.querySelector('.submit');
 
-    function showModal(title, text, paymentUrl = '') {
+    function showModal(title, text, paymentUrl = '', payment = null) {
         modalTitle.textContent = title;
         modalText.textContent = text;
+        if (payment) {
+            paymentName.textContent = payment.name || 'Анкета здоровья';
+            paymentQuantity.textContent = payment.quantity || 1;
+            paymentPrice.textContent = Number(payment.price || 3000).toLocaleString('ru-RU');
+            paymentSummary.classList.add('is-visible');
+        } else {
+            paymentSummary.classList.remove('is-visible');
+        }
         if (paymentUrl) {
             modalPay.href = paymentUrl;
             modalPay.style.display = '';
@@ -348,7 +378,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             const result = await response.json();
             if (!response.ok || !result.success) throw new Error(result.message || 'Ошибка отправки формы.');
             form.reset();
-            showModal('Необходима оплата', result.message || 'Для анализа анкеты необходимо оплатить услугу.', result.paymentUrl || '');
+            showModal('Необходима оплата', result.message || 'Для анализа анкеты необходимо оплатить услугу.', result.paymentUrl || '', result.payment || null);
         } catch (error) {
             showModal('Не удалось отправить', error.message || 'Попробуйте позже.');
         } finally {
