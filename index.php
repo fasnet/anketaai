@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+session_start();
+
 /*
   Настройки
 */
@@ -176,8 +178,73 @@ function db_init(PDO $pdo) {
         event_text TEXT NOT NULL,
         INDEX response_history_idx (response_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS app_users (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        login VARCHAR(191) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
 
     $done = true;
+}
+
+
+function current_user() {
+    $id = $_SESSION['user_id'] ?? null;
+    if (!$id) return null;
+    $stmt = db()->prepare('SELECT id, login, created_at, updated_at FROM app_users WHERE id=?');
+    $stmt->execute([(int)$id]);
+    return $stmt->fetch() ?: null;
+}
+
+function is_authenticated() {
+    return (bool)current_user();
+}
+
+function login_user($login, $password) {
+    $stmt = db()->prepare('SELECT * FROM app_users WHERE login=? LIMIT 1');
+    $stmt->execute([trim((string)$login)]);
+    $user = $stmt->fetch();
+    if (!$user || !password_verify((string)$password, (string)$user['password_hash'])) {
+        return false;
+    }
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = (int)$user['id'];
+    return true;
+}
+
+function logout_user() {
+    $_SESSION = [];
+    if (ini_get('session.use_cookies')) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'], (bool)$params['secure'], (bool)$params['httponly']);
+    }
+    session_destroy();
+}
+
+function redirect_to_login() {
+    $target = $_SERVER['REQUEST_URI'] ?? '?page=questionnaires';
+    header('Location: ?page=login&next=' . rawurlencode($target));
+    exit;
+}
+
+function require_auth_for_page($page) {
+    if ($page === 'form' || $page === 'login') return;
+    if (!is_authenticated()) redirect_to_login();
+}
+
+function require_auth_for_action($action) {
+    if ($action === 'analyze' || $action === 'login') return;
+    if (!is_authenticated()) {
+        if (strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'fetch') {
+            header('Content-Type: application/json; charset=utf-8');
+            http_response_code(401);
+            echo json_encode(['ok' => false, 'error' => 'Требуется авторизация.'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        redirect_to_login();
+    }
 }
 
 function db_identifier($name) {
@@ -1894,6 +1961,47 @@ function send_response_to_rnova($response) {
   API endpoint
 */
 
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    require_auth_for_action((string)postv('action'));
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'login') {
+    $next = trim((string)postv('next', '?page=questionnaires'));
+    if (login_user(postv('login'), postv('password'))) {
+        header('Location: ' . ($next !== '' ? $next : '?page=questionnaires'));
+        exit;
+    }
+    header('Location: ?page=login&error=1&next=' . rawurlencode($next));
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'update_profile') {
+    $user = current_user();
+    if (!$user) redirect_to_login();
+    $login = trim((string)postv('login'));
+    $password = (string)postv('password');
+    if ($login === '') {
+        header('Location: ?page=profile&error=empty');
+        exit;
+    }
+    $params = [$login];
+    $sql = 'UPDATE app_users SET login=?, updated_at=?';
+    $params[] = date('Y-m-d H:i:s');
+    if ($password !== '') {
+        $sql .= ', password_hash=?';
+        $params[] = password_hash($password, PASSWORD_DEFAULT);
+    }
+    $sql .= ' WHERE id=?';
+    $params[] = (int)$user['id'];
+    try {
+        db()->prepare($sql)->execute($params);
+        header('Location: ?page=profile&saved=1');
+    } catch (Throwable $e) {
+        header('Location: ?page=profile&error=duplicate');
+    }
+    exit;
+}
+
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'save_questionnaire') {
     $id = trim((string)postv('id'));
     $title = trim((string)postv('title', 'Новая анкета')) ?: 'Новая анкета';
@@ -2259,6 +2367,9 @@ function status_label($status) {
 }
 
 $page = (string)($_GET['page'] ?? 'questionnaires');
+if ($page === 'logout') { logout_user(); header('Location: ?page=login'); exit; }
+require_auth_for_page($page);
+$authUser = current_user();
 $currentQuestionnaire = questionnaire_find($_GET['qid'] ?? null);
 $sections = $currentQuestionnaire['sections'] ?? questionnaire_sections_static();
 $hintConfig = load_hint_config($sections, $currentQuestionnaire['id'] ?? null);
@@ -2270,7 +2381,7 @@ $sections = apply_hint_config($sections, $hintConfig);
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= $page === 'form' ? 'Анкета здоровья' : ($page === 'response-view' ? 'Просмотр ответа пациента' : ($page === 'questionnaire-edit' ? 'Редактирование анкеты' : ($page === 'questionnaires' ? 'Анкеты' : 'Ответы пациентов'))) ?></title>
+    <title><?= $page === 'login' ? 'Вход' : ($page === 'form' ? 'Анкета здоровья' : ($page === 'profile' ? 'Профиль' : ($page === 'response-view' ? 'Просмотр ответа пациента' : ($page === 'questionnaire-edit' ? 'Редактирование анкеты' : ($page === 'questionnaires' ? 'Анкеты' : 'Ответы пациентов'))))) ?></title>
     <style>
         :root{
             --bg:#f4f6f3;
@@ -2456,6 +2567,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         .view-main{padding-top:46px}.breadcrumbs{display:flex;align-items:center;gap:12px;margin-bottom:22px;color:#66716c;font-size:14px}.breadcrumbs a{color:#66716c;text-decoration:none}.view-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:28px}.view-title h1{margin:0 0 16px;font-size:34px;line-height:1.1;color:#2e363d}.view-meta{display:flex;align-items:center;gap:24px;flex-wrap:wrap;color:#59636d}.view-meta span{display:inline-flex;align-items:center;gap:8px}.view-status,.ai-generated{display:inline-flex;align-items:center;border-radius:999px;padding:8px 14px;background:#e4f0eb;color:#2f806d;font-size:12px;font-weight:800}.view-actions{display:flex;gap:14px;align-items:center}.outline-btn,.more-btn{height:56px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#3e4b53;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:12px;padding:0 22px;font-weight:800}.outline-btn svg,.more-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.more-btn{width:56px;padding:0}.view-grid{display:grid;grid-template-columns:minmax(360px,.9fr) minmax(520px,1.1fr);gap:24px}.view-card{border:1px solid #dfe6e2;border-radius:12px;background:#fff;padding:22px;box-shadow:0 12px 30px rgba(40,55,50,.035)}.view-card h2{margin:0 0 20px;color:#25303a;font-size:20px}.answer-section{border:1px solid #dfe6e2;border-radius:9px;padding:16px 18px;margin-bottom:12px}.answer-section h3{margin:0 0 14px;display:flex;align-items:center;gap:12px;color:var(--green-dark);font-size:14px;text-transform:uppercase}.answer-section h3 span{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;background:var(--green-dark);color:#fff;font-size:13px}.answer-row{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:6px 0;color:#334049}.answer-row small{color:#53605d;font-weight:700}.answer-section p{margin:8px 0;color:#334049;line-height:1.55}.answer-table{width:100%;border-collapse:collapse;font-size:13px}.answer-table th,.answer-table td{padding:9px 4px;border-bottom:1px solid #edf1ef;text-align:left}.answer-table th{color:#53605d}.show-all{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:8px;background:#fff;color:#25303a;font-weight:800}.ai-card-view{padding:0;overflow:hidden}.ai-panel{padding:24px 28px;border:1px solid #dfe6e2;border-radius:9px;margin-bottom:18px;line-height:1.7}.ai-panel h3,.editor-title{margin:0 0 14px;color:var(--green-dark);font-size:16px}.ai-panel ul,.ai-panel ol,.editor-content ul,.editor-content ol{margin:8px 0 22px 20px;padding:0}.ai-panel li,.editor-content li{margin:8px 0}.editor-box{border:1px solid #dfe6e2;border-radius:9px;overflow:hidden}.editor-toolbar{display:flex;gap:4px;align-items:center;height:44px;border-bottom:1px solid #dfe6e2;background:#fbfcfb;padding:0 12px;color:#4c5962}.tool{width:28px;height:28px;display:grid;place-items:center;border-radius:5px;font-weight:800}.editor-content{padding:18px 22px;line-height:1.65;min-height:430px}.char-count{text-align:right;color:#7c8783;font-size:12px;margin-top:8px}.save-note{margin-top:18px;border-radius:8px;background:#edf5f1;color:var(--green-dark);padding:15px 18px}.history-card{margin-top:24px}.history-row{display:grid;grid-template-columns:150px 1fr;gap:16px;margin:12px 0;color:#59636d}.history-card .outline-btn{height:42px;float:right;margin-top:-50px}
 
 
+        .login-shell{min-height:100vh;display:grid;place-items:center;padding:28px;background:radial-gradient(circle at 18% 8%,rgba(0,180,216,.16),transparent 34%),linear-gradient(135deg,#fbfcfb,#edf5f1)}.login-card{width:min(440px,100%);border:1px solid rgba(223,230,225,.95);border-radius:26px;background:rgba(255,255,255,.9);box-shadow:var(--shadow);padding:34px;backdrop-filter:blur(12px)}.login-card .brand{padding:0 0 28px}.login-card h1{margin:0 0 10px;font-size:30px;color:#25303a}.login-card p{margin:0 0 24px;color:var(--muted);line-height:1.55}.login-card form{gap:16px}.login-card .btn{width:100%;margin-top:8px}.login-error{border:1px solid #f0c7c5;background:#fff4f3;color:#b7433f;border-radius:12px;padding:12px 14px;font-weight:700}.sidebar-bottom{margin-top:auto;display:grid;gap:12px}.profile-card,.logout-card{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid #dfe8e3;border-radius:10px;background:#fff;color:#394349;text-decoration:none;font-weight:800}.profile-card.is-active{background:#f2f6f4;color:var(--green-dark)}.logout-card{color:#b7433f}.profile-form{max-width:620px;display:grid;gap:20px}.notice{border-radius:12px;padding:14px 16px;background:#edf5f1;color:var(--green-dark);font-weight:800}.notice-error{background:#fff4f3;color:#b7433f;border:1px solid #f0c7c5}
         .settings-panel{display:block;position:static;background:transparent;padding:0}.settings-panel .modal{width:100%;height:auto;min-height:calc(100vh - 190px);overflow:visible;box-shadow:var(--shadow);border:1px solid var(--line)}.settings-panel .modal-form,.settings-panel .modal-layout{overflow:visible}.settings-panel .modal-layout{align-items:start}.settings-panel .hint-nav{top:24px;max-height:calc(100vh - 48px);z-index:5}.settings-panel .hint-editor{overflow:visible}.settings-panel .modal-close,.settings-panel #cancelAiHints{display:none}.settings-panel .modal-actions{position:sticky;bottom:0;background:#fff}
         .success-dialog .modal-close{position:absolute;top:12px;right:14px}.success-modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(38,45,44,.48);z-index:1200}.success-modal.is-open{display:flex}.success-dialog{width:min(460px,calc(100vw - 32px));background:#fff;border-radius:24px;box-shadow:0 24px 70px rgba(20,30,28,.28);padding:34px;text-align:center;position:relative}.success-icon{width:68px;height:68px;margin:0 auto 18px;border-radius:50%;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);font-size:38px;font-weight:800}.success-dialog h2{margin:0 0 10px;color:#2d3937}.success-dialog p{margin:0 0 24px;color:var(--muted);line-height:1.55}.editor-toolbar button.tool{border:0;background:#f3f6f4;cursor:pointer}.editor-content[contenteditable="true"]{outline:none;min-height:280px}.outline-btn,.create-btn{border:0;cursor:pointer;text-decoration:none}.empty-state{padding:28px;color:var(--muted);text-align:center}
         @media (max-width:1100px){.app-shell{grid-template-columns:1fr}.admin-sidebar{position:relative;height:auto}.filters-card,.table-head,.table-row,.response-stats{grid-template-columns:1fr}.table-head{display:none}.table-row{gap:12px;padding:22px}.doctor-card{margin-top:24px}.section-card{grid-template-columns:1fr}.section-aside{grid-template-columns:36px 56px 1fr}.section-content,.top-grid{grid-template-columns:1fr}.progress-card{display:none}.modal-layout{grid-template-columns:1fr}.hint-nav{display:none}.modal{width:calc(100vw - 28px);height:calc(100vh - 28px)}.hint-option-row{grid-template-columns:18px 1fr}.hint-option-row .hint-textarea-wrap{grid-column:2}.actions{flex-wrap:wrap}}
@@ -2463,7 +2575,16 @@ $sections = apply_hint_config($sections, $hintConfig);
     </style>
 </head>
 <body>
-<?php if ($page !== 'form'): ?>
+<?php if ($page === 'login'): ?>
+<div class="login-shell">
+    <section class="login-card">
+        <div class="brand"><div class="brand-mark" aria-hidden="true"><?= hero_logo_svg() ?></div><div><div class="brand-title">ОПРОСНИК</div><div class="brand-subtitle">закрытая зона сервиса</div></div></div>
+        <h1>Вход в сервис</h1><p>Введите логин и пароль, чтобы открыть управление анкетами и ответами пациентов.</p>
+        <?php if (isset($_GET['error'])): ?><div class="login-error">Неверный логин или пароль.</div><?php endif; ?>
+        <form method="post"><input type="hidden" name="action" value="login"><input type="hidden" name="next" value="<?= e($_GET['next'] ?? '?page=questionnaires') ?>"><div class="question"><div class="question-label">Логин</div><input class="field" name="login" autocomplete="username" required autofocus></div><div class="question"><div class="question-label">Пароль</div><input class="field" type="password" name="password" autocomplete="current-password" required></div><button class="btn" type="submit">Войти</button></form>
+    </section>
+</div>
+<?php elseif ($page !== 'form'): ?>
 <div class="app-shell">
     <aside class="admin-sidebar">
         <div class="brand">
@@ -2476,10 +2597,20 @@ $sections = apply_hint_config($sections, $hintConfig);
         <nav class="admin-nav" aria-label="Основное меню">
             <a class="<?= ($page === 'questionnaires' || $page === 'questionnaire-edit') ? 'is-active' : '' ?>" href="?page=questionnaires"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>Анкеты</span></a>
             <a class="<?= ($page === 'responses' || $page === 'response-view') ? 'is-active' : '' ?>" href="?page=responses"><svg viewBox="0 0 24 24"><path d="M4 5h14v14H4z"/><path d="M8 9h6M8 13h4M18 12l2 2 3-5"/></svg><span>Ответы пациентов</span></a>
+            <a class="<?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg><span>Профиль</span></a>
         </nav>
-        <div class="doctor-card"><div class="doctor-avatar">👩🏻‍⚕️</div><div><div class="doctor-name">Иванова Е. А.</div><div class="doctor-role">Врач превентивной<br>медицины</div></div><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+        <div class="sidebar-bottom"><a class="profile-card <?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile">👤 <?= e($authUser['login'] ?? 'Профиль') ?></a><a class="logout-card" href="?page=logout">⎋ Выйти</a></div>
     </aside>
-    <?php if ($page === 'questionnaires'): ?>
+    <?php if ($page === 'profile'): ?>
+    <main class="admin-main">
+        <header class="admin-header responses-header"><div class="admin-title"><h1>Профиль</h1><p>Измените логин и пароль для доступа к сервису.</p></div></header>
+        <section class="view-card profile-form">
+            <?php if (isset($_GET['saved'])): ?><div class="notice">Профиль сохранён.</div><?php endif; ?>
+            <?php if (isset($_GET['error'])): ?><div class="notice notice-error">Не удалось сохранить профиль. Проверьте логин: он должен быть уникальным и не пустым.</div><?php endif; ?>
+            <form method="post" class="profile-form"><input type="hidden" name="action" value="update_profile"><div class="question"><div class="question-label">Логин</div><input class="field" name="login" value="<?= e($authUser['login'] ?? '') ?>" required></div><div class="question"><div class="question-label">Новый пароль</div><input class="field" type="password" name="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></div><div class="actions" style="position:static;padding:0"><button class="btn" type="submit">Сохранить</button></div></form>
+        </section>
+    </main>
+    <?php elseif ($page === 'questionnaires'): ?>
     <?php $questionnaires = questionnaires_all(); ?>
     <main class="admin-main">
         <header class="admin-header responses-header">
