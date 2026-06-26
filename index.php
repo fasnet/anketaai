@@ -91,7 +91,7 @@ function prodamus_signature($data, $secretKey) {
         return '';
     }
     $json = str_replace('/', '\\/', $json);
-    return hash_hmac('sha256', $json, (string)$secretKey);
+    return base64_encode(hash_hmac('sha256', $json, (string)$secretKey, true));
 }
 
 function prodamus_payment_url($orderId, $patient) {
@@ -2347,14 +2347,13 @@ $listItems = questionnaire_list_items($sections);
             }
             savePendingSurvey();
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Переход к оплате...';
+            submitBtn.textContent = 'Ожидание перехода к оплате';
             openSuccessModal({
                 title: 'Для анализа анкеты необходимо ее оплатить',
-                text: 'Сейчас откроется защищенная страница оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
+                text: 'Нажмите кнопку ниже, чтобы открыть защищенную страницу оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
                 paymentUrl,
                 paymentButtonText: 'Перейти к оплате 3000 ₽'
             });
-            window.location.href = paymentUrl;
         });
     }
 
