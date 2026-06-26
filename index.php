@@ -1937,25 +1937,36 @@ function response_plain_text($response) {
 }
 
 
-function simple_pdf_document($text) {
+function simple_pdf_hex_text($text) {
+    return strtoupper(bin2hex(mb_convert_encoding((string)$text, 'UTF-16BE', 'UTF-8')));
+}
+
+function simple_pdf_document($text, $title = 'Расшифровка анкеты') {
     $lines = preg_split('/\R/u', (string)$text) ?: [];
+    array_unshift($lines, (string)$title, '');
     $pdfLines = ['BT', '/F1 10 Tf', '40 800 Td'];
     foreach (array_slice($lines, 0, 120) as $line) {
         $line = mb_substr($line, 0, 95, 'UTF-8');
-        $line = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $line);
-        $pdfLines[] = '(' . $line . ') Tj';
+        $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
         $pdfLines[] = '0 -14 Td';
     }
     $pdfLines[] = 'ET';
     $stream = implode("\n", $pdfLines);
+    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
+    $toUnicode = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap CMapName currentdict /CMap defineresource pop end end";
     $objects = [
         '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
         '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
-        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj',
-        '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
-        '5 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
+        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 8 0 R >> endobj',
+        '4 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [5 0 R] /ToUnicode 7 0 R >> endobj',
+        '5 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 6 0 R /DW 600 >> endobj',
+        '6 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 9 0 R >> endobj',
+        '7 0 obj << /Length ' . strlen($toUnicode) . ' >> stream' . "\n" . $toUnicode . "\nendstream endobj",
+        '8 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
+        '9 0 obj << /Length ' . strlen($fontData) . ' /Length1 ' . strlen($fontData) . ' >> stream' . "\n" . $fontData . "\nendstream endobj",
     ];
-    $pdf = "%PDF-1.4\n";
+    $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
     $offsets = [0];
     foreach ($objects as $object) {
         $offsets[] = strlen($pdf);
@@ -2110,12 +2121,13 @@ function send_response_to_rnova($response) {
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
     $description = response_plain_text($response);
+    $responseUrl = app_base_url() . '?page=response-view&id=' . rawurlencode((string)($response['id'] ?? ''));
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
     $task = rnova_request('POST', 'createTask', [
         'role_id' => (int)rnova_config('RNOVA_ADMIN_ROLE_ID', (string)RNOVA_ADMIN_ROLE_ID),
         'user_id' => (int)rnova_config('RNOVA_EMPLOYEE_ID', (string)RNOVA_EMPLOYEE_ID),
         'title' => 'Анализ анкеты ' . ($response['survey'] ?? ''),
-        'desc' => $description,
+        'desc' => $responseUrl,
         'patient_id' => $patientId,
         'due_date' => rnova_date($due),
     ]);
@@ -2124,7 +2136,7 @@ function send_response_to_rnova($response) {
         'patient_id' => $patientId,
         'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
         'type' => 'pdf',
-        'content' => base64_encode(simple_pdf_document($description)),
+        'content' => base64_encode(simple_pdf_document($description, 'Расшифровка анкеты')),
     ]);
     if (!$file['ok']) return $file;
     return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'file' => $file['data']];
@@ -2523,6 +2535,13 @@ function patient_response_view_data() {
     return find_patient_response($_GET['id'] ?? null);
 }
 
+function response_actual_status($response) {
+    $status = (string)($response['status'] ?? '');
+    if ($status === 'processed') return 'processed';
+    if ($status === 'draft' && (int)($response['filled_answers'] ?? 0) <= 0 && (int)($response['progress'] ?? 0) <= 0) return 'draft';
+    return 'in_work';
+}
+
 function response_status_label($status) {
     $labels = [
         'completed' => 'В работе',
@@ -2878,7 +2897,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         <nav class="breadcrumbs" aria-label="Хлебные крошки"><a href="?page=responses">Ответы пациентов</a><span>›</span><span><?= e($response['survey']) ?></span><span>›</span><span>Просмотр</span></nav>
         <header class="view-header">
             <div class="view-title">
-                <h1>Ответ пациента <span class="view-status"><?= e(response_status_label($response['status'] ?? 'completed')) ?></span></h1>
+                <h1>Ответ пациента <span class="view-status"><?= e(response_status_label(response_actual_status($response))) ?></span></h1>
                 <div class="view-meta"><span>♙ <?= e($response['patient_display'] ?? response_full_name($patient)) ?></span><span>⊙ <?= e($response['meta']) ?></span><span>Заполнено: <?= e($response['date']) ?></span></div>
             </div>
             <div class="view-actions">
@@ -2946,7 +2965,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <article class="stat-card stat-amber"><span><?= icon_svg('<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>') ?></span><div><strong><?= e($inWorkResponses) ?></strong><p>В работе</p></div></article>
         </section>
         <section class="questionnaire-table responses-table" aria-label="Ответы пациентов">
-            <div class="table-head"><div>Пациент</div><div>Анкета</div><div>Дата заполнения <span class="sort-mark">↕</span></div><div>Статус</div><div>Заполнено</div><div>Действия</div></div>
+            <div class="table-head"><div>Пациент</div><div>Анкета</div><div>Дата заполнения</div><div>Статус</div><div>Заполнено</div><div>Действия</div></div>
             <?php if (!$responseItems): ?>
             <div class="empty-state">Пока нет сохранённых ответов. Заполните анкету, чтобы данные появились здесь из базы данных.</div>
             <?php endif; ?>
@@ -3499,7 +3518,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         pdfBtn?.addEventListener('click', () => {
             const win = window.open('', '_blank');
             if (!win) return;
-            win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Ответ ИИ</title><style>body{font-family:Arial,sans-serif;line-height:1.55;padding:32px;color:#273235}h1,h2,h3{color:#00b4d8}</style></head><body><h1>Ответ ИИ</h1>${editor.innerHTML}</body></html>`);
+            win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Расшифровка анкеты</title><style>body{font-family:Arial,sans-serif;line-height:1.55;padding:32px;color:#273235}h1,h2,h3{color:#00b4d8}</style></head><body><h1>Расшифровка анкеты</h1>${editor.innerHTML}</body></html>`);
             win.document.close();
             win.focus();
             win.print();
