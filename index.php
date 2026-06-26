@@ -105,18 +105,18 @@ function prodamus_payment_url($orderId, $patient) {
         'urlReturn' => $baseUrl . '?page=form&payment=error',
         'urlSuccess' => $baseUrl . '?page=form&payment=success',
         'currency' => 'rub',
+        'order_sum' => (string)(PRODAMUS_PRODUCT_PRICE * PRODAMUS_PRODUCT_QUANTITY),
         'products' => [
             [
                 'name' => PRODAMUS_PRODUCT_NAME,
-                'price' => PRODAMUS_PRODUCT_PRICE,
-                'quantity' => PRODAMUS_PRODUCT_QUANTITY,
+                'price' => (string)PRODAMUS_PRODUCT_PRICE,
+                'quantity' => (string)PRODAMUS_PRODUCT_QUANTITY,
             ],
         ],
         '_param_shop_id' => PRODAMUS_SHOP_ID,
         '_param_response_id' => (string)$orderId,
     ];
 
-    $data['signature'] = prodamus_signature($data, PRODAMUS_SECRET_KEY);
     return rtrim(PRODAMUS_FORM_URL, '/') . '/?' . http_build_query($data);
 }
 
