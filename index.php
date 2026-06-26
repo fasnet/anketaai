@@ -9,6 +9,10 @@ const VSEGPT_API_URL = 'https://api.vsegpt.ru:7090/v1/chat/completions';
 const VSEGPT_MODEL   = 'gpt-4o-mini';
 const AI_HINTS_FILE   = __DIR__ . '/ai_hints.json';
 const PATIENT_RESPONSES_FILE = __DIR__ . '/patient_responses.json';
+const RNOVA_API_URL = '';
+const RNOVA_API_TOKEN = '';
+const RNOVA_ADMIN_ROLE_ID = 12460;
+const RNOVA_EMPLOYEE_ID = 50256;
 
 /*
   Настройки оплаты Prodamus
@@ -345,6 +349,23 @@ function display_answer_value($value) {
     return $value !== '' ? $value : '—';
 }
 
+function response_has_medical_answers($answers) {
+    if (!is_array($answers)) {
+        return false;
+    }
+    foreach ($answers as $section) {
+        if (!is_array($section)) {
+            continue;
+        }
+        foreach (($section['answers'] ?? []) as $answer) {
+            if (is_array($answer) && answer_has_value($answer['answer'] ?? '')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 function response_completion_stats($answers) {
     if (!is_array($answers)) {
         return ['filled' => 0, 'total' => 0, 'percent' => 0];
@@ -386,7 +407,7 @@ function build_response_record($sections, $patient, $readableAnswers, $hints, $a
         'patient' => $patient,
         'survey' => 'Анкета здоровья',
         'category' => 'Комплексный превентивный приём',
-        'status' => 'completed',
+        'status' => $completion['filled'] > 0 ? 'in_work' : 'draft',
         'progress' => $completion['percent'],
         'filled_answers' => $completion['filled'],
         'total_answers' => $completion['total'],
@@ -421,6 +442,15 @@ function update_patient_response($id, $callback) {
     }
     unset($response);
     return false;
+}
+
+function delete_patient_response($id) {
+    $data = load_patient_responses();
+    $before = count($data['responses']);
+    $data['responses'] = array_values(array_filter($data['responses'], function ($response) use ($id) {
+        return (string)($response['id'] ?? '') !== (string)$id;
+    }));
+    return count($data['responses']) !== $before && save_patient_responses($data);
 }
 
 function find_patient_response($id = null) {
@@ -1382,6 +1412,115 @@ function extract_json($text) {
     return trim($text);
 }
 
+
+function response_plain_text($response) {
+    $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
+    $lines = ['Анкета: ' . ($response['survey'] ?? 'Анкета здоровья'), 'Пациент: ' . response_full_name($patient), ''];
+    foreach ($patient as $key => $value) {
+        if (answer_has_value($value)) {
+            $lines[] = patient_field_label($key) . ': ' . display_answer_value($value);
+        }
+    }
+    foreach (($response['answers'] ?? []) as $section) {
+        if (!is_array($section)) continue;
+        $lines[] = '';
+        $lines[] = section_clean_title($section['section'] ?? 'Раздел');
+        foreach (($section['answers'] ?? []) as $answer) {
+            if (!is_array($answer)) continue;
+            $lines[] = ($answer['question'] ?? 'Вопрос') . ': ' . display_answer_value($answer['answer'] ?? '');
+        }
+    }
+    return implode("\n", $lines);
+}
+
+
+function simple_pdf_document($text) {
+    $lines = preg_split('/\R/u', (string)$text) ?: [];
+    $pdfLines = ['BT', '/F1 10 Tf', '40 800 Td'];
+    foreach (array_slice($lines, 0, 120) as $line) {
+        $line = mb_substr($line, 0, 95, 'UTF-8');
+        $line = str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $line);
+        $pdfLines[] = '(' . $line . ') Tj';
+        $pdfLines[] = '0 -14 Td';
+    }
+    $pdfLines[] = 'ET';
+    $stream = implode("\n", $pdfLines);
+    $objects = [
+        '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+        '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj',
+        '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+        '5 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
+    ];
+    $pdf = "%PDF-1.4\n";
+    $offsets = [0];
+    foreach ($objects as $object) {
+        $offsets[] = strlen($pdf);
+        $pdf .= $object . "\n";
+    }
+    $xref = strlen($pdf);
+    $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+    for ($i = 1; $i <= count($objects); $i++) {
+        $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
+    }
+    return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+}
+
+function rnova_request($method, $path, $payload = null) {
+    if (trim(RNOVA_API_URL) === '' || trim(RNOVA_API_TOKEN) === '') {
+        return ['ok' => false, 'error' => 'Не настроены RNOVA_API_URL/RNOVA_API_TOKEN.'];
+    }
+    $url = rtrim(RNOVA_API_URL, '/') . '/' . ltrim($path, '/');
+    $headers = ['Content-Type: application/json', 'Authorization: Bearer ' . RNOVA_API_TOKEN];
+    $json = $payload === null ? '' : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'error' => 'Для интеграции RNOVA требуется расширение cURL.'];
+    }
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_CUSTOMREQUEST => $method, CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_POSTFIELDS => $json, CURLOPT_TIMEOUT => 60]);
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
+    $data = json_decode((string)$raw, true);
+    return ['ok' => $http >= 200 && $http < 300, 'http' => $http, 'data' => is_array($data) ? $data : [], 'raw' => $raw];
+}
+
+function send_response_to_rnova($response) {
+    $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
+    $phone = trim((string)($patient['phone'] ?? ''));
+    $email = trim((string)($patient['email'] ?? ''));
+    $found = rnova_request('GET', 'patients?' . http_build_query(['phone' => $phone, 'email' => $email]));
+    $patientId = $found['data']['items'][0]['id'] ?? $found['data'][0]['id'] ?? null;
+    if (!$patientId) {
+        $created = rnova_request('POST', 'patients', $patient);
+        if (!$created['ok']) return $created;
+        $patientId = $created['data']['id'] ?? null;
+    }
+    if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
+
+    $description = response_plain_text($response);
+    $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
+    $task = rnova_request('POST', 'tasks', [
+        'role_id' => RNOVA_ADMIN_ROLE_ID,
+        'employee_id' => RNOVA_EMPLOYEE_ID,
+        'title' => 'Анализ анкеты',
+        'description' => $description,
+        'patient_id' => $patientId,
+        'due_date' => $due,
+    ]);
+    if (!$task['ok']) return $task;
+    $file = rnova_request('POST', 'patients/' . rawurlencode((string)$patientId) . '/files', [
+        'name' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
+        'content_type' => 'application/pdf',
+        'content_base64' => base64_encode(simple_pdf_document($description)),
+        'section' => 'files',
+    ]);
+    if (!$file['ok']) return $file;
+    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'file' => $file['data']];
+}
+
 /*
   API endpoint
 */
@@ -1430,6 +1569,46 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'sa
     exit;
 }
 
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'delete_response')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $ok = delete_patient_response(trim((string)postv('id')));
+    echo json_encode(['ok' => $ok, 'message' => $ok ? 'Ответ удалён.' : 'Ответ пациента не найден.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'mark_processed')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $ok = update_patient_response(trim((string)postv('id')), function ($response) {
+        $response['status'] = 'processed';
+        $response['history'][] = ['date' => date('c'), 'event' => 'Анкета отмечена как обработанная'];
+        return $response;
+    });
+    echo json_encode(['ok' => $ok, 'message' => $ok ? 'Анкета отмечена как обработанная.' : 'Ответ пациента не найден.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'send_to_mis')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $id = trim((string)postv('id'));
+    $response = $id !== '' ? find_patient_response($id) : null;
+    if (!$response) {
+        echo json_encode(['ok' => false, 'error' => 'Ответ пациента не найден.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+    $sent = send_response_to_rnova($response);
+    if ($sent['ok']) {
+        update_patient_response($response['id'], function ($item) use ($sent) {
+            $item['mis_sent_at'] = date('c');
+            $item['mis_patient_id'] = $sent['patient_id'] ?? null;
+            $item['history'][] = ['date' => date('c'), 'event' => 'Ответ отправлен в МИС RNOVA'];
+            return $item;
+        });
+    }
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Ответ отправлен в МИС.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'analyze')) {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -1458,6 +1637,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
 
     list($readableAnswers, $hints) = build_ai_payload($sections, $_POST);
     $draftRecord = build_response_record($sections, $patient, $readableAnswers, $hints);
+    if (!response_has_medical_answers($readableAnswers)) {
+        $responseId = add_patient_response($draftRecord);
+        echo json_encode([
+            'ok' => (bool)$responseId,
+            'message' => $responseId ? 'Ответ успешно сохранён без отправки в ИИ: заполнен только блок общей информации.' : 'Не удалось сохранить JSON.',
+            'warning' => 'VSEGPT не вызывался, потому что медицинские блоки анкеты пустые.',
+            'response_id' => $responseId,
+            'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
+            'patient' => $patient,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
 
 $system = <<<SYS
 Ты лучший врач мира, эксперт по превентивной, интегративной и доказательной медицине.
@@ -1571,50 +1762,26 @@ $userPayload = [
 
 
 function questionnaire_list_items($sections) {
-    $categories = [
-        1 => 'Общее здоровье',
-        2 => 'Общее здоровье',
-        3 => 'Анамнез',
-        4 => 'Неврология',
-        5 => 'Гастроэнтерология',
-        6 => 'Пульмонология',
-        7 => 'Дерматология',
-        8 => 'Сон и восстановление',
-        9 => 'Психоэмоциональное здоровье',
-        10 => 'Болевой синдром',
-        11 => 'Травматология',
-        12 => 'Аллергология',
-        13 => 'Терапия',
-        14 => 'Врачи и диагнозы',
-        15 => 'Наследственность',
-        16 => 'Образ жизни',
-    ];
-    $createdDates = ['12.05.2025','10.05.2025','08.05.2025','07.05.2025','05.05.2025','01.05.2025','28.04.2025','24.04.2025','22.04.2025','20.04.2025','18.04.2025','16.04.2025','14.04.2025','12.04.2025','10.04.2025','08.04.2025'];
-    $updatedDates = ['14.05.2025','10.05.2025','12.05.2025','07.05.2025','11.05.2025','02.05.2025','29.04.2025','25.04.2025','23.04.2025','21.04.2025','19.04.2025','17.04.2025','15.04.2025','13.04.2025','11.04.2025','09.04.2025'];
-    $responses = [128, 95, 156, null, 87, 32, 64, 48, 71, 53, 24, 45, 69, 38, 42, 57];
-    $statuses = ['active','active','active','draft','active','archive','active','active','draft','active','archive','active','active','active','draft','active'];
-    $colors = ['green','green','green','purple','blue','violet','teal','indigo','amber','rose','slate','orange','cyan','emerald','lime','pink'];
-
     $items = [];
-    for ($i = 0; $i < 16 && isset($sections[$i]); $i++) {
+    $responseCount = count(load_patient_responses()['responses'] ?? []);
+    for ($i = 0; isset($sections[$i]); $i++) {
         $meta = section_meta($i + 2, $sections[$i]);
         $items[] = [
             'title' => $meta['title'],
             'summary' => $meta['summary'],
-            'category' => $categories[$i + 1] ?? 'Общее здоровье',
-            'status' => $statuses[$i] ?? 'active',
-            'created' => $createdDates[$i] ?? '01.04.2025',
-            'updated' => $updatedDates[$i] ?? '02.04.2025',
-            'author' => 'Иванова Е. А.',
-            'responses' => $responses[$i] ?? null,
+            'category' => 'Раздел анкеты здоровья',
+            'status' => 'active',
+            'created' => '—',
+            'updated' => '—',
+            'author' => '—',
+            'responses' => $responseCount,
             'icon' => $meta['icon'],
-            'color' => $colors[$i] ?? 'green',
+            'color' => 'green',
         ];
     }
 
     return $items;
 }
-
 
 function patient_response_items() {
     $data = load_patient_responses();
@@ -1664,6 +1831,8 @@ function patient_response_view_data() {
 function response_status_label($status) {
     $labels = [
         'completed' => 'Завершено',
+        'in_work' => 'В работе',
+        'processed' => 'Обработана',
         'progress' => 'В процессе',
         'draft' => 'Черновик',
     ];
@@ -1698,8 +1867,8 @@ $listItems = questionnaire_list_items($sections);
             --soft:#f7f9f7;
             --soft-green:#edf5f1;
             --line:#dfe6e1;
-            --green:#6f9a8a;
-            --green-dark:#477869;
+            --green:#00b4d8;
+            --green-dark:#00b4d8;
             --text:#273235;
             --muted:#71807c;
             --accent:#d9534f;
@@ -1713,7 +1882,7 @@ $listItems = questionnaire_list_items($sections);
             font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
             color:var(--text);
             background:
-                radial-gradient(circle at 20% 0%, rgba(111,154,138,.12), transparent 32%),
+                radial-gradient(circle at 20% 0%, rgba(0,180,216,.12), transparent 32%),
                 linear-gradient(180deg,#fbfcfb 0%,var(--bg) 100%);
             font-size:14px;
         }
@@ -1818,7 +1987,7 @@ $listItems = questionnaire_list_items($sections);
             outline:none;
             transition:border-color .18s,box-shadow .18s,background .18s;
         }
-        .field:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(111,154,138,.12)}
+        .field:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(0,180,216,.12)}
         textarea.field{resize:vertical;min-height:76px}
         .inline-options,.checklist{display:grid;gap:11px;grid-template-columns:1fr;max-width:100%}
         .inline-options label,.checklist label{display:flex;align-items:flex-start;gap:10px;color:#455155;line-height:1.35;cursor:pointer;min-width:0;overflow-wrap:anywhere}
@@ -1850,7 +2019,7 @@ $listItems = questionnaire_list_items($sections);
         .btn{
             appearance:none;border:none;border-radius:10px;
             padding:15px 32px;min-width:178px;
-            background:linear-gradient(135deg,var(--green-dark),#6f9a8a);
+            background:linear-gradient(135deg,var(--green-dark),#00b4d8);
             color:#fff;font:800 14px/1 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
             letter-spacing:.03em;cursor:pointer;
             box-shadow:0 10px 26px rgba(71,120,105,.18);
@@ -1872,12 +2041,12 @@ $listItems = questionnaire_list_items($sections);
         .admin-main{padding:54px 40px 34px;min-width:0}.admin-header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:36px}.admin-title h1{font-size:34px;line-height:1.1;margin:0 0 12px;color:#2e363d}.admin-title p{margin:0;color:#59636d;font-size:17px}.create-btn{display:inline-flex;align-items:center;gap:14px;padding:18px 24px;border-radius:7px;background:linear-gradient(135deg,var(--green-dark),#5b8f7f);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 12px 28px rgba(71,120,105,.2)}.create-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:2;fill:none}
         .filters-card{display:grid;grid-template-columns:minmax(260px,1.8fr) 190px 230px 190px 210px;gap:28px;align-items:end;padding:32px 22px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;margin-bottom:20px}.filter-field{position:relative}.filter-field label{position:absolute;left:12px;top:-13px;background:#fff;padding:0 7px;color:#65716d;font-size:12px}.filter-control{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#46515a;font:inherit;padding:0 14px}.search-control{padding-left:56px}.search-icon{position:absolute;left:20px;bottom:15px;color:var(--green-dark)}.reset-filter{height:48px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#4e5963;font-weight:600;font:inherit;display:flex;align-items:center;justify-content:center;gap:12px}.reset-filter svg,.search-icon{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
         .questionnaire-table{border:1px solid #dfe6e2;border-radius:10px;background:#fff;overflow:hidden}.table-head,.table-row{display:grid;grid-template-columns:2.15fr 1.18fr .92fr 1.22fr 1.22fr .86fr 1.12fr;align-items:center;column-gap:24px}.table-head{padding:0 22px;height:58px;color:#303b45;font-size:13px;font-weight:800}.table-row{min-height:122px;padding:0 22px;border-top:1px solid #e7ece9}.survey-name{display:grid;grid-template-columns:60px 1fr;gap:24px;align-items:center;min-width:0}.survey-icon{width:60px;height:60px;border-radius:9px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark)}.survey-icon .icon-svg{width:36px;height:36px}.survey-icon.purple{background:#f0eafa;color:#7455c7}.survey-icon.blue{background:#edf8ff;color:#1687d9}.survey-icon.violet{background:#f4eef8;color:#805bb7}.survey-icon.amber{background:#fff6e0;color:#b98900}.survey-icon.rose{background:#fff0f2;color:#bd5c72}.survey-icon.orange{background:#fff3e9;color:#c66f27}.survey-title{font-weight:800;color:#25303a;margin-bottom:7px;line-height:1.35}.survey-summary,.table-muted{color:#5e6974;line-height:1.55}.status-pill{display:inline-flex;align-items:center;gap:8px;border-radius:6px;padding:8px 11px;font-weight:800;font-size:13px}.status-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor}.status-active{background:#e9f4ef;color:#3b806e}.status-draft{background:#fff6df;color:#b98500}.status-archive{background:#f0f2f3;color:#77808a}.responses-count{color:var(--green-dark);font-weight:700}.actions-cell{display:flex;gap:16px;justify-content:flex-end}.icon-button{width:52px;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;display:grid;place-items:center;color:#28333c;text-decoration:none}.icon-button svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.sort-mark{color:var(--green-dark);font-size:18px;margin-left:8px}.table-footer{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px 12px;color:#66716c}.pagination{display:flex;align-items:center;gap:16px}.page-btn,.page-number{width:40px;height:40px;border:1px solid transparent;background:#fff;border-radius:8px;display:grid;place-items:center;color:#26323a;text-decoration:none}.page-btn{border-color:#dfe6e2}.page-number.is-current{border-color:var(--green-dark);color:var(--green-dark)}.per-page{display:flex;align-items:center;gap:14px}.per-page select{width:86px;height:46px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;padding:0 14px;color:#59636d}
-        .responses-header{margin-bottom:34px}.response-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:36px;margin-bottom:30px}.stat-card{min-height:92px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;display:flex;align-items:center;gap:20px;padding:20px 28px}.stat-card span{width:58px;height:58px;border-radius:8px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);flex:0 0 auto}.stat-card .icon-svg{width:30px;height:30px}.stat-card strong{display:block;font-size:26px;line-height:1;color:#2c3540;margin-bottom:9px}.stat-card p{margin:0;color:#5f6974}.stat-blue span{background:#eef8ff;color:#1477d4}.stat-amber span{background:#fff7e5;color:#df9d05}.responses-table .table-head,.responses-table .table-row{grid-template-columns:1.55fr 1.7fr 1.35fr .98fr 1.05fr .58fr}.responses-table .table-row{min-height:84px}.patient-name{display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:center;min-width:0}.patient-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#edf1ef;overflow:hidden;font-size:13px;font-weight:900;color:var(--green-dark)}.response-pill{display:inline-flex;border-radius:6px;padding:7px 10px;font-weight:800;font-size:12px}.response-completed{background:#e4f0eb;color:#2f806d}.response-progress{background:#e7f2ff;color:#1c67bf}.response-draft{background:#edf0f2;color:#606a74}.progress-cell{display:grid;gap:10px;align-content:center}.progress-cell strong{font-size:15px;color:#2d3741}.mini-progress{display:block;width:150px;max-width:100%;height:5px;border-radius:999px;background:#e1e6e9;overflow:hidden}.mini-progress i{display:block;height:100%;border-radius:inherit;background:var(--green-dark)}
+        .responses-header{margin-bottom:34px}.response-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:36px;margin-bottom:30px}.stat-card{min-height:92px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;display:flex;align-items:center;gap:20px;padding:20px 28px}.stat-card span{width:58px;height:58px;border-radius:8px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);flex:0 0 auto}.stat-card .icon-svg{width:30px;height:30px}.stat-card strong{display:block;font-size:26px;line-height:1;color:#2c3540;margin-bottom:9px}.stat-card p{margin:0;color:#5f6974}.stat-blue span{background:#eef8ff;color:#1477d4}.stat-amber span{background:#fff7e5;color:#df9d05}.responses-table .table-head,.responses-table .table-row{grid-template-columns:1.55fr 1.7fr 1.35fr .98fr 1.05fr .58fr}.responses-table .table-row{min-height:84px}.patient-name{display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:center;min-width:0}.patient-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#edf1ef;overflow:hidden;font-size:13px;font-weight:900;color:var(--green-dark)}.response-pill{display:inline-flex;border-radius:6px;padding:7px 10px;font-weight:800;font-size:12px}.response-completed{background:#e4f0eb;color:#2f806d}.response-in_work{background:#e7f2ff;color:#1c67bf}.response-processed{background:#e6fbff;color:#008fb0}.response-progress{background:#e7f2ff;color:#1c67bf}.response-draft{background:#edf0f2;color:#606a74}.progress-cell{display:grid;gap:10px;align-content:center}.progress-cell strong{font-size:15px;color:#2d3741}.mini-progress{display:block;width:150px;max-width:100%;height:5px;border-radius:999px;background:#e1e6e9;overflow:hidden}.mini-progress i{display:block;height:100%;border-radius:inherit;background:var(--green-dark)}
         .view-main{padding-top:46px}.breadcrumbs{display:flex;align-items:center;gap:12px;margin-bottom:22px;color:#66716c;font-size:14px}.breadcrumbs a{color:#66716c;text-decoration:none}.view-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:28px}.view-title h1{margin:0 0 16px;font-size:34px;line-height:1.1;color:#2e363d}.view-meta{display:flex;align-items:center;gap:24px;flex-wrap:wrap;color:#59636d}.view-meta span{display:inline-flex;align-items:center;gap:8px}.view-status,.ai-generated{display:inline-flex;align-items:center;border-radius:999px;padding:8px 14px;background:#e4f0eb;color:#2f806d;font-size:12px;font-weight:800}.view-actions{display:flex;gap:14px;align-items:center}.outline-btn,.more-btn{height:56px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#3e4b53;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:12px;padding:0 22px;font-weight:800}.outline-btn svg,.more-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.more-btn{width:56px;padding:0}.view-grid{display:grid;grid-template-columns:minmax(360px,.9fr) minmax(520px,1.1fr);gap:24px}.view-card{border:1px solid #dfe6e2;border-radius:12px;background:#fff;padding:22px;box-shadow:0 12px 30px rgba(40,55,50,.035)}.view-card h2{margin:0 0 20px;color:#25303a;font-size:20px}.answer-section{border:1px solid #dfe6e2;border-radius:9px;padding:16px 18px;margin-bottom:12px}.answer-section h3{margin:0 0 14px;display:flex;align-items:center;gap:12px;color:var(--green-dark);font-size:14px;text-transform:uppercase}.answer-section h3 span{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;background:var(--green-dark);color:#fff;font-size:13px}.answer-row{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:6px 0;color:#334049}.answer-row small{color:#53605d;font-weight:700}.answer-section p{margin:8px 0;color:#334049;line-height:1.55}.answer-table{width:100%;border-collapse:collapse;font-size:13px}.answer-table th,.answer-table td{padding:9px 4px;border-bottom:1px solid #edf1ef;text-align:left}.answer-table th{color:#53605d}.show-all{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:8px;background:#fff;color:#25303a;font-weight:800}.ai-card-view{padding:0;overflow:hidden}.ai-panel{padding:24px 28px;border:1px solid #dfe6e2;border-radius:9px;margin-bottom:18px;line-height:1.7}.ai-panel h3,.editor-title{margin:0 0 14px;color:var(--green-dark);font-size:16px}.ai-panel ul,.ai-panel ol,.editor-content ul,.editor-content ol{margin:8px 0 22px 20px;padding:0}.ai-panel li,.editor-content li{margin:8px 0}.editor-box{border:1px solid #dfe6e2;border-radius:9px;overflow:hidden}.editor-toolbar{display:flex;gap:4px;align-items:center;height:44px;border-bottom:1px solid #dfe6e2;background:#fbfcfb;padding:0 12px;color:#4c5962}.tool{width:28px;height:28px;display:grid;place-items:center;border-radius:5px;font-weight:800}.editor-content{padding:18px 22px;line-height:1.65;min-height:430px}.char-count{text-align:right;color:#7c8783;font-size:12px;margin-top:8px}.save-note{margin-top:18px;border-radius:8px;background:#edf5f1;color:var(--green-dark);padding:15px 18px}.history-card{margin-top:24px}.history-row{display:grid;grid-template-columns:150px 1fr;gap:16px;margin:12px 0;color:#59636d}.history-card .outline-btn{height:42px;float:right;margin-top:-50px}
 
 
         .settings-panel{display:block;position:static;background:transparent;padding:0}.settings-panel .modal{width:100%;height:auto;min-height:calc(100vh - 190px);overflow:visible;box-shadow:var(--shadow);border:1px solid var(--line)}.settings-panel .modal-form,.settings-panel .modal-layout{overflow:visible}.settings-panel .modal-layout{align-items:start}.settings-panel .hint-nav{top:24px;max-height:calc(100vh - 48px);z-index:5}.settings-panel .hint-editor{overflow:visible}.settings-panel .modal-close,.settings-panel #cancelAiHints{display:none}.settings-panel .modal-actions{position:sticky;bottom:0;background:#fff}
-        .success-modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(38,45,44,.48);z-index:1200}.success-modal.is-open{display:flex}.success-dialog{width:min(460px,calc(100vw - 32px));background:#fff;border-radius:24px;box-shadow:0 24px 70px rgba(20,30,28,.28);padding:34px;text-align:center;position:relative}.success-icon{width:68px;height:68px;margin:0 auto 18px;border-radius:50%;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);font-size:38px;font-weight:800}.success-dialog h2{margin:0 0 10px;color:#2d3937}.success-dialog p{margin:0 0 24px;color:var(--muted);line-height:1.55}.editor-toolbar button.tool{border:0;background:#f3f6f4;cursor:pointer}.editor-content[contenteditable="true"]{outline:none;min-height:280px}.outline-btn,.create-btn{border:0;cursor:pointer;text-decoration:none}.empty-state{padding:28px;color:var(--muted);text-align:center}
+        .success-dialog .modal-close{position:absolute;top:12px;right:14px}.success-modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(38,45,44,.48);z-index:1200}.success-modal.is-open{display:flex}.success-dialog{width:min(460px,calc(100vw - 32px));background:#fff;border-radius:24px;box-shadow:0 24px 70px rgba(20,30,28,.28);padding:34px;text-align:center;position:relative}.success-icon{width:68px;height:68px;margin:0 auto 18px;border-radius:50%;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);font-size:38px;font-weight:800}.success-dialog h2{margin:0 0 10px;color:#2d3937}.success-dialog p{margin:0 0 24px;color:var(--muted);line-height:1.55}.editor-toolbar button.tool{border:0;background:#f3f6f4;cursor:pointer}.editor-content[contenteditable="true"]{outline:none;min-height:280px}.outline-btn,.create-btn{border:0;cursor:pointer;text-decoration:none}.empty-state{padding:28px;color:var(--muted);text-align:center}
         @media (max-width:1100px){.app-shell{grid-template-columns:1fr}.admin-sidebar{position:relative;height:auto}.filters-card,.table-head,.table-row,.response-stats{grid-template-columns:1fr}.table-head{display:none}.table-row{gap:12px;padding:22px}.doctor-card{margin-top:24px}.section-card{grid-template-columns:1fr}.section-aside{grid-template-columns:36px 56px 1fr}.section-content,.top-grid{grid-template-columns:1fr}.progress-card{display:none}.modal-layout{grid-template-columns:1fr}.hint-nav{display:none}.modal{width:calc(100vw - 28px);height:calc(100vh - 28px)}.hint-option-row{grid-template-columns:18px 1fr}.hint-option-row .hint-textarea-wrap{grid-column:2}.actions{flex-wrap:wrap}}
         @media (max-width:720px){.admin-main{padding:26px 14px}.admin-header{display:block}.create-btn{margin-top:18px}.filters-card{gap:16px;padding:22px 14px}.survey-name{grid-template-columns:48px 1fr;gap:14px}.survey-icon{width:48px;height:48px}.table-footer{display:grid;justify-items:start}.wrap{margin:0;border-radius:0;padding:16px 12px}.hero{display:block}.date-card{margin-top:14px}.section-content,.top-grid,.inline-options,.checklist{grid-template-columns:1fr}.section-aside{grid-template-columns:34px 50px 1fr}.btn{width:100%;min-width:0}.actions{position:static;padding-left:0;padding-right:0}.modal-backdrop{padding:8px}.modal-head,.modal-layout,.modal-actions{padding-left:18px;padding-right:18px}.modal-actions{flex-direction:column}.hint-status{margin-right:0}.btn-reset{min-width:0;width:100%}}
     </style>
@@ -1924,6 +2093,8 @@ $listItems = questionnaire_list_items($sections);
                 <div class="view-meta"><span>♙ <?= e($response['patient_display'] ?? response_full_name($patient)) ?></span><span>⊙ <?= e($response['meta']) ?></span><span>Заполнено: <?= e($response['date']) ?></span></div>
             </div>
             <div class="view-actions">
+                <button class="outline-btn" type="button" id="markProcessedBtn">✓ Обработана</button>
+                <button class="outline-btn" type="button" id="sendToMisBtn">↗ Отправить в МИС</button>
                 <button class="outline-btn" type="button" id="createPdfBtn"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Создать PDF</button>
                 <button class="create-btn" type="button" id="saveAiAnswerBtn"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z"/></svg>Сохранить ИИ-ответ</button>
             </div>
@@ -1975,10 +2146,11 @@ $listItems = questionnaire_list_items($sections);
     <?php endif; ?>
     <?php else: ?>
     <main class="admin-main">
-        <?php $responseItems = patient_response_items(); $totalResponses = count($responseItems); $uniquePatients = count(array_unique(array_map(function ($item) { return $item['patient_display']; }, $responseItems))); $completedResponses = count(array_filter($responseItems, function ($item) { return ($item['status'] ?? '') === 'completed'; })); ?>
+        <?php $responseItems = patient_response_items(); $statusFilter = (string)($_GET['status'] ?? 'all'); if (in_array($statusFilter, ['in_work','processed'], true)) { $responseItems = array_values(array_filter($responseItems, function ($item) use ($statusFilter) { return ($item['status'] ?? '') === $statusFilter; })); } $totalResponses = count($responseItems); $uniquePatients = count(array_unique(array_map(function ($item) { return $item['patient_display']; }, $responseItems))); $completedResponses = count(array_filter($responseItems, function ($item) { return ($item['status'] ?? '') === 'completed'; })); ?>
         <header class="admin-header responses-header">
             <div class="admin-title"><h1>Ответы пациентов</h1><p>Просматривайте и анализируйте ответы пациентов по анкетам.</p></div>
         </header>
+        <form class="filters-card" method="get" style="grid-template-columns:260px 140px"><input type="hidden" name="page" value="responses"><div class="filter-field"><label>Статус</label><select class="filter-control" name="status"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>Все анкеты</option><option value="in_work" <?= $statusFilter === 'in_work' ? 'selected' : '' ?>>В работе</option><option value="processed" <?= $statusFilter === 'processed' ? 'selected' : '' ?>>Обработанные</option></select></div><button class="reset-filter" type="submit">Показать</button></form>
         <section class="response-stats" aria-label="Сводка ответов">
             <article class="stat-card stat-green"><span><?= icon_svg('<path d="M9 5h9v16H6V5h3Z"/><path d="M9 5a3 3 0 0 1 6 0H9Z"/><path d="M9 11h6M9 15h6"/>') ?></span><div><strong><?= e($totalResponses) ?></strong><p>Всего ответов</p></div></article>
             <article class="stat-card stat-blue"><span><?= icon_svg('<path d="M16 21v-2a4 4 0 0 0-8 0v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M20 21v-2a3 3 0 0 0-2-2.8"/><path d="M18 4.2a3 3 0 0 1 0 5.6"/>') ?></span><div><strong><?= e($uniquePatients) ?></strong><p>Пациент</p></div></article>
@@ -1996,7 +2168,7 @@ $listItems = questionnaire_list_items($sections);
                 <div><div><?= e($item['date']) ?></div><div class="table-muted"><?= e($item['doctor']) ?></div></div>
                 <div><span class="response-pill response-<?= e($item['status']) ?>"><?= e(response_status_label($item['status'])) ?></span></div>
                 <div class="progress-cell"><strong><?= e($item['filled_label']) ?></strong><span class="mini-progress"><i style="width:<?= e($item['progress']) ?>%"></i></span></div>
-                <div class="actions-cell"><a class="icon-button" href="?page=response-view&amp;id=<?= e($item['id']) ?>" aria-label="Посмотреть"><svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg></a></div>
+                <div class="actions-cell"><a class="icon-button" href="?page=response-view&amp;id=<?= e($item['id']) ?>" aria-label="Посмотреть"><svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg></a><button class="icon-button delete-response-btn" type="button" data-id="<?= e($item['id']) ?>" aria-label="Удалить"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>
             </article>
             <?php endforeach; ?>
         </section>
@@ -2366,6 +2538,8 @@ $listItems = questionnaire_list_items($sections);
         const pdfBtn = document.getElementById('createPdfBtn');
         const params = new URLSearchParams(location.search);
         const responseId = params.get('id') || '';
+        const markProcessedBtn = document.getElementById('markProcessedBtn');
+        const sendToMisBtn = document.getElementById('sendToMisBtn');
 
         function updateCount() {
             if (charCount) charCount.textContent = `Символов: ${editor.innerText.trim().length}`;
@@ -2397,10 +2571,33 @@ $listItems = questionnaire_list_items($sections);
                 saveBtn.disabled = false;
             }
         });
+        async function postResponseAction(action, button, pendingText) {
+            if (!responseId || !button) return;
+            const old = button.textContent;
+            button.disabled = true;
+            button.textContent = pendingText;
+            const fd = new FormData();
+            fd.append('action', action);
+            fd.append('id', responseId);
+            try {
+                const res = await fetch(location.href, {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.message || data.error || 'Ошибка операции');
+                if (saveStatus) saveStatus.textContent = data.message || 'Готово.';
+                if (action === 'mark_processed') setTimeout(() => location.reload(), 500);
+            } catch (err) {
+                if (saveStatus) saveStatus.textContent = err.message || 'Ошибка операции';
+            } finally {
+                button.disabled = false;
+                button.textContent = old;
+            }
+        }
+        markProcessedBtn?.addEventListener('click', () => postResponseAction('mark_processed', markProcessedBtn, 'Отмечаем...'));
+        sendToMisBtn?.addEventListener('click', () => postResponseAction('send_to_mis', sendToMisBtn, 'Отправляем...'));
         pdfBtn?.addEventListener('click', () => {
             const win = window.open('', '_blank');
             if (!win) return;
-            win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Ответ ИИ</title><style>body{font-family:Arial,sans-serif;line-height:1.55;padding:32px;color:#273235}h1,h2,h3{color:#477869}</style></head><body><h1>Ответ ИИ</h1>${editor.innerHTML}</body></html>`);
+            win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Ответ ИИ</title><style>body{font-family:Arial,sans-serif;line-height:1.55;padding:32px;color:#273235}h1,h2,h3{color:#00b4d8}</style></head><body><h1>Ответ ИИ</h1>${editor.innerHTML}</body></html>`);
             win.document.close();
             win.focus();
             win.print();
@@ -2416,6 +2613,18 @@ $listItems = questionnaire_list_items($sections);
             text: 'Платеж не был завершен или произошла ошибка оплаты. Попробуйте оплатить анкету еще раз.'
         });
     }
+
+    document.querySelectorAll('.delete-response-btn').forEach((button) => {
+        button.addEventListener('click', async () => {
+            if (!confirm('Удалить ответ пациента?')) return;
+            const fd = new FormData();
+            fd.append('action', 'delete_response');
+            fd.append('id', button.dataset.id || '');
+            const res = await fetch(location.href, {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+            const data = await res.json();
+            if (data.ok) location.reload(); else alert(data.message || data.error || 'Не удалось удалить ответ');
+        });
+    });
 
     initHintsEditor();
     initQuizForm();
