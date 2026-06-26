@@ -146,7 +146,7 @@ function db_init(PDO $pdo) {
         'patient_dob' => 'VARCHAR(32) NULL', 'patient_phone' => 'VARCHAR(64) NULL', 'patient_email' => 'VARCHAR(255) NULL',
         'patient_sex' => 'VARCHAR(32) NULL', 'patient_height' => 'VARCHAR(32) NULL', 'patient_weight' => 'VARCHAR(32) NULL',
         'patient_waist' => 'VARCHAR(32) NULL', 'patient_filled_at' => 'VARCHAR(32) NULL', 'analysis_raw' => 'LONGTEXT NULL',
-        'ai_answer_html' => 'LONGTEXT NULL', 'mis_sent_at' => 'VARCHAR(64) NULL', 'mis_patient_id' => 'VARCHAR(64) NULL'
+        'ai_answer_html' => 'LONGTEXT NULL', 'vsegpt_cost' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'billing_amount' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'vsegpt_usage_json' => 'LONGTEXT NULL', 'mis_sent_at' => 'VARCHAR(64) NULL', 'mis_patient_id' => 'VARCHAR(64) NULL'
     ]);
     $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_sections (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -439,7 +439,7 @@ function response_from_row($row) {
         'status' => $row['status'] ?? 'draft', 'progress' => (int)($row['progress'] ?? 0), 'filled_answers' => (int)($row['filled_answers'] ?? 0), 'total_answers' => (int)($row['total_answers'] ?? 0),
         'created_at' => $row['created_at'] ?? '', 'updated_at' => $row['updated_at'] ?? '', 'answers' => $sections,
         'hints' => array_map('strval', $hstmt->fetchAll(PDO::FETCH_COLUMN)), 'analysis' => null, 'analysis_raw' => $row['analysis_raw'] ?? '',
-        'ai_answer_html' => $row['ai_answer_html'] ?: '<p>ИИ-анализ пока не сформирован.</p>', 'mis_sent_at' => $row['mis_sent_at'] ?? null, 'mis_patient_id' => $row['mis_patient_id'] ?? null, 'history' => $history,
+        'ai_answer_html' => $row['ai_answer_html'] ?: '<p>ИИ-анализ пока не сформирован.</p>', 'vsegpt_cost' => (float)($row['vsegpt_cost'] ?? 0), 'billing_amount' => (float)($row['billing_amount'] ?? 0), 'vsegpt_usage_json' => $row['vsegpt_usage_json'] ?? '', 'mis_sent_at' => $row['mis_sent_at'] ?? null, 'mis_patient_id' => $row['mis_patient_id'] ?? null, 'history' => $history,
     ];
 }
 
@@ -457,9 +457,9 @@ function save_patient_responses($data) {
 }
 
 function upsert_patient_response($record) {
-    $stmt = db()->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, mis_sent_at, mis_patient_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), updated_at=VALUES(updated_at)');
+    $stmt = db()->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, vsegpt_cost, billing_amount, vsegpt_usage_json, mis_sent_at, mis_patient_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), vsegpt_cost=VALUES(vsegpt_cost), billing_amount=VALUES(billing_amount), vsegpt_usage_json=VALUES(vsegpt_usage_json), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), updated_at=VALUES(updated_at)');
     $patient = is_array($record['patient'] ?? null) ? $record['patient'] : [];
-    $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
+    $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', (float)($record['vsegpt_cost'] ?? 0), (float)($record['billing_amount'] ?? 0), $record['vsegpt_usage_json'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
     if (!$ok) return false;
     $id = (string)$record['id'];
     db()->prepare('DELETE FROM patient_response_hints WHERE response_id=?')->execute([$id]);
@@ -1832,6 +1832,45 @@ function call_vsegpt($messages) {
     return ['ok' => true, 'http' => 200, 'raw' => $raw];
 }
 
+function vsegpt_cost_from_response($decoded) {
+    if (!is_array($decoded)) return 0.0;
+    $paths = [
+        ['usage', 'cost'], ['usage', 'total_cost'], ['usage', 'price'], ['usage', 'total_price'],
+        ['cost'], ['total_cost'], ['price'], ['billing', 'cost'], ['billing', 'amount'],
+    ];
+    foreach ($paths as $path) {
+        $value = $decoded;
+        foreach ($path as $key) {
+            if (!is_array($value) || !array_key_exists($key, $value)) {
+                $value = null;
+                break;
+            }
+            $value = $value[$key];
+        }
+        if (is_numeric($value)) return (float)$value;
+    }
+    return 0.0;
+}
+
+function format_money($value) {
+    return number_format((float)$value, 4, '.', ' ') . ' ₽';
+}
+
+function billing_period_bounds() {
+    $from = trim((string)($_GET['from'] ?? date('Y-m-01')));
+    $to = trim((string)($_GET['to'] ?? date('Y-m-d')));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) $from = date('Y-m-01');
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) $to = date('Y-m-d');
+    if ($from > $to) { $tmp = $from; $from = $to; $to = $tmp; }
+    return [$from, $to, $from . ' 00:00:00', $to . ' 23:59:59'];
+}
+
+function billing_items($fromDateTime, $toDateTime) {
+    $stmt = db()->prepare('SELECT id, survey, patient_surname, patient_name, patient_patronymic, created_at, updated_at, vsegpt_cost, billing_amount, vsegpt_usage_json FROM patient_responses WHERE billing_amount > 0 AND updated_at BETWEEN ? AND ? ORDER BY updated_at DESC');
+    $stmt->execute([$fromDateTime, $toDateTime]);
+    return $stmt->fetchAll();
+}
+
 function extract_json($text) {
     $text = trim((string)$text);
     $text = preg_replace('/^```(?:json)?/i', '', $text);
@@ -2263,6 +2302,10 @@ $userPayload = [
     $analysis = json_decode($clean, true);
 
     $record = build_response_record($sections, $patient, $readableAnswers, $hints, is_array($analysis) ? $analysis : null, $content);
+    $vsegptCost = vsegpt_cost_from_response($decoded);
+    $record['vsegpt_cost'] = $vsegptCost;
+    $record['billing_amount'] = $vsegptCost * 3;
+    $record['vsegpt_usage_json'] = json_encode($decoded['usage'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
     $record['history'][] = ['date' => date('c'), 'event' => 'Сгенерировано ИИ'];
     $responseId = add_patient_response($record);
 
@@ -2597,6 +2640,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         <nav class="admin-nav" aria-label="Основное меню">
             <a class="<?= ($page === 'questionnaires' || $page === 'questionnaire-edit') ? 'is-active' : '' ?>" href="?page=questionnaires"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>Анкеты</span></a>
             <a class="<?= ($page === 'responses' || $page === 'response-view') ? 'is-active' : '' ?>" href="?page=responses"><svg viewBox="0 0 24 24"><path d="M4 5h14v14H4z"/><path d="M8 9h6M8 13h4M18 12l2 2 3-5"/></svg><span>Ответы пациентов</span></a>
+            <a class="<?= $page === 'billing' ? 'is-active' : '' ?>" href="?page=billing"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M4 11h16"/><path d="M8 16h3"/></svg><span>Биллинг</span></a>
             <a class="<?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg><span>Профиль</span></a>
         </nav>
         <div class="sidebar-bottom"><a class="profile-card <?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile">👤 <?= e($authUser['login'] ?? 'Профиль') ?></a><a class="logout-card" href="?page=logout">⎋ Выйти</a></div>
@@ -2609,6 +2653,38 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?php if (isset($_GET['error'])): ?><div class="notice notice-error">Не удалось сохранить профиль. Проверьте логин: он должен быть уникальным и не пустым.</div><?php endif; ?>
             <form method="post" class="profile-form"><input type="hidden" name="action" value="update_profile"><div class="question"><div class="question-label">Логин</div><input class="field" name="login" value="<?= e($authUser['login'] ?? '') ?>" required></div><div class="question"><div class="question-label">Новый пароль</div><input class="field" type="password" name="password" autocomplete="new-password" placeholder="Оставьте пустым, чтобы не менять"></div><div class="actions" style="position:static;padding:0"><button class="btn" type="submit">Сохранить</button></div></form>
         </section>
+    </main>
+    <?php elseif ($page === 'billing'): ?>
+    <?php list($billingFrom, $billingTo, $billingFromDateTime, $billingToDateTime) = billing_period_bounds(); $billingRows = billing_items($billingFromDateTime, $billingToDateTime); $billingTotal = array_sum(array_map(function ($row) { return (float)($row['billing_amount'] ?? 0); }, $billingRows)); ?>
+    <main class="admin-main">
+        <header class="admin-header responses-header">
+            <div class="admin-title"><h1>Биллинг</h1><p>Стоимость запросов к VSEGPT при анализе анкет с наценкой ×3.</p></div>
+        </header>
+        <form class="filters-card" method="get" style="grid-template-columns:220px 220px 140px">
+            <input type="hidden" name="page" value="billing">
+            <div class="filter-field"><label>Дата с</label><input class="filter-control" type="date" name="from" value="<?= e($billingFrom) ?>"></div>
+            <div class="filter-field"><label>Дата по</label><input class="filter-control" type="date" name="to" value="<?= e($billingTo) ?>"></div>
+            <button class="reset-filter" type="submit">Показать</button>
+        </form>
+        <section class="response-stats" aria-label="Сводка биллинга">
+            <article class="stat-card stat-green"><span><?= icon_svg('<path d="M4 7h16v12H4z"/><path d="M4 11h16"/><path d="M8 16h3"/>') ?></span><div><strong><?= e(format_money($billingTotal)) ?></strong><p>Общая сумма по фильтру</p></div></article>
+            <article class="stat-card stat-blue"><span><?= icon_svg('<path d="M9 5h9v16H6V5h3Z"/><path d="M9 11h6M9 15h6"/>') ?></span><div><strong><?= e(count($billingRows)) ?></strong><p>Оплачиваемых анализов</p></div></article>
+        </section>
+        <section class="questionnaire-table responses-table" aria-label="Биллинг VSEGPT">
+            <div class="table-head" style="grid-template-columns:1.5fr 1.2fr 1fr 1fr 1fr"><div>Пациент</div><div>Анкета</div><div>Дата анализа</div><div>Стоимость VSEGPT</div><div>К оплате ×3</div></div>
+            <?php if (!$billingRows): ?><div class="empty-state">За выбранный период нет запросов VSEGPT с рассчитанной стоимостью.</div><?php endif; ?>
+            <?php foreach ($billingRows as $row): ?>
+                <?php $patientName = trim(($row['patient_surname'] ?? '') . ' ' . ($row['patient_name'] ?? '') . ' ' . ($row['patient_patronymic'] ?? '')); ?>
+                <article class="table-row" style="grid-template-columns:1.5fr 1.2fr 1fr 1fr 1fr">
+                    <div class="survey-title"><a href="?page=response-view&amp;id=<?= e($row['id']) ?>"><?= e($patientName !== '' ? $patientName : 'Пациент') ?></a></div>
+                    <div><?= e($row['survey'] ?? 'Анкета здоровья') ?></div>
+                    <div><?= e(format_response_date($row['updated_at'] ?? $row['created_at'] ?? '')) ?></div>
+                    <div><?= e(format_money($row['vsegpt_cost'] ?? 0)) ?></div>
+                    <div><strong><?= e(format_money($row['billing_amount'] ?? 0)) ?></strong></div>
+                </article>
+            <?php endforeach; ?>
+        </section>
+        <footer class="table-footer"><div>Показано <?= e(count($billingRows)) ?> записей за период <?= e($billingFrom) ?> — <?= e($billingTo) ?></div></footer>
     </main>
     <?php elseif ($page === 'questionnaires'): ?>
     <?php $questionnaires = questionnaires_all(); ?>
