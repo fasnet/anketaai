@@ -12,20 +12,6 @@ $bitrixWebhookUrl = getenv('BITRIX24_WEBHOOK_URL') ?: '';
 $bitrixCategoryId = getenv('BITRIX24_CATEGORY_ID') ?: '';
 $bitrixStageId = getenv('BITRIX24_STAGE_ID') ?: '';
 
-$prodamusSecretKey = getenv('PRODAMUS_SECRET_KEY') ?: 'secretKey';
-$prodamusLinkToForm = getenv('PRODAMUS_LINK_TO_FORM') ?: 'https://adaptogenzzclinic.payform.ru/';
-$prodamusShopId = getenv('PRODAMUS_SHOP_ID') ?: 'adaptogenzzclinic';
-
-function current_page_url(array $query = []): string {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $path = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
-    return $scheme . '://' . $host . $path . ($query ? '?' . http_build_query($query) : '');
-}
-
-$prodamusLinkSuccess = getenv('PRODAMUS_LINK_SUCCESS') ?: current_page_url(['payment' => 'success']);
-$prodamusLinkError = getenv('PRODAMUS_LINK_ERROR') ?: current_page_url(['payment' => 'error']);
-
 $textFields = [
     ['last-name', 'Фамилия *', 'Фамилия', 'text', true],
     ['first-name', 'Имя *', 'Имя', 'text', true],
@@ -84,36 +70,6 @@ function clean_value($value) {
 function field_value(array $source, string $name): string {
     $value = $source[$name] ?? '';
     return is_array($value) ? implode(', ', clean_value($value)) : clean_value($value);
-}
-
-function prodamus_flatten_for_signature(array $data, string $parentKey = ''): array {
-    ksort($data);
-    $result = [];
-
-    foreach ($data as $key => $value) {
-        if ($key === 'signature') {
-            continue;
-        }
-
-        $fullKey = $parentKey === '' ? (string) $key : $parentKey . '[' . $key . ']';
-        if (is_array($value)) {
-            $result += prodamus_flatten_for_signature($value, $fullKey);
-        } else {
-            $result[$fullKey] = (string) $value;
-        }
-    }
-
-    return $result;
-}
-
-function prodamus_signature(array $data, string $secretKey): string {
-    $flatData = prodamus_flatten_for_signature($data);
-    return base64_encode(hash_hmac('sha256', http_build_query($flatData), $secretKey, true));
-}
-
-function prodamus_payment_url(array $data, string $secretKey, string $linkToForm): string {
-    $data['signature'] = prodamus_signature($data, $secretKey);
-    return rtrim($linkToForm, '/') . '/?' . http_build_query($data);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -183,36 +139,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    $orderId = 'anketa-' . date('YmdHis') . '-' . bin2hex(random_bytes(3));
-    $paymentData = [
-        'do' => 'pay',
-        'order_id' => $orderId,
-        'customer_phone' => field_value($_POST, 'phone'),
-        'customer_email' => field_value($_POST, 'email'),
-        'urlReturn' => $GLOBALS['prodamusLinkSuccess'],
-        'urlSuccess' => $GLOBALS['prodamusLinkSuccess'],
-        'urlNotification' => $GLOBALS['prodamusLinkSuccess'],
-        'urlError' => $GLOBALS['prodamusLinkError'],
-        'success' => $GLOBALS['prodamusLinkSuccess'],
-        'error' => $GLOBALS['prodamusLinkError'],
-        'linkSuccess' => $GLOBALS['prodamusLinkSuccess'],
-        'linkError' => $GLOBALS['prodamusLinkError'],
-        'idMagazin' => $GLOBALS['prodamusShopId'],
-        'sys' => $GLOBALS['prodamusShopId'],
-        'products' => [
-            [
-                'name' => 'Анкета здоровья',
-                'price' => 3000,
-                'quantity' => 1,
-            ],
-        ],
-    ];
-
-    echo json_encode([
-        'success' => true,
-        'message' => 'Для анализа анкеты необходимо оплатить услугу.',
-        'paymentUrl' => prodamus_payment_url($paymentData, $GLOBALS['prodamusSecretKey'], $GLOBALS['prodamusLinkToForm']),
-    ], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['success' => true, 'message' => 'Анкета успешно отправлена. Спасибо!'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 ?>
@@ -248,9 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .modal-card { width:min(460px,100%); padding:34px; border-radius:22px; background:#fff; text-align:center; box-shadow:0 20px 70px rgba(0,0,0,.24); }
         .modal-card h2 { margin:0 0 12px; color:var(--accent); font-size:28px; }
         .modal-card p { margin:0 0 24px; font-size:17px; line-height:1.45; }
-        .modal-actions { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
-        .modal-card button, .modal-card a { border:0; border-radius:22px; background:var(--accent); color:#fff; padding:13px 28px; font-weight:700; cursor:pointer; text-decoration:none; font-size:14px; }
-        .modal-card .secondary { background:#d9eef4; color:var(--accent); }
+        .modal-card button { border:0; border-radius:22px; background:var(--accent); color:#fff; padding:13px 28px; font-weight:700; cursor:pointer; }
         @media (max-width:900px) { .layout { grid-template-columns:1fr; padding:24px 16px; } .hero h1 { font-size:36px; } .left-title { font-size:32px; } }
     </style>
 </head>
@@ -295,10 +220,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="modal-card">
         <h2 id="modalTitle">Успешно отправлено</h2>
         <p id="modalText">Анкета успешно отправлена. Спасибо!</p>
-        <div class="modal-actions">
-            <a href="#" id="modalPay" style="display:none">Оплатить</a>
-            <button type="button" id="modalClose" class="secondary">Закрыть</button>
-        </div>
+        <button type="button" id="modalClose">Закрыть</button>
     </div>
 </div>
 
@@ -308,27 +230,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     const modalTitle = document.getElementById('modalTitle');
     const modalText = document.getElementById('modalText');
     const modalClose = document.getElementById('modalClose');
-    const modalPay = document.getElementById('modalPay');
     const submitButton = form.querySelector('.submit');
 
-    function showModal(title, text, paymentUrl = '') {
+    function showModal(title, text) {
         modalTitle.textContent = title;
         modalText.textContent = text;
-        if (paymentUrl) {
-            modalPay.href = paymentUrl;
-            modalPay.style.display = '';
-        } else {
-            modalPay.removeAttribute('href');
-            modalPay.style.display = 'none';
-        }
         modal.classList.add('is-open');
-    }
-
-    const paymentStatus = new URLSearchParams(window.location.search).get('payment');
-    if (paymentStatus === 'success') {
-        showModal('Оплата прошла успешно', 'Анкета успешно отправлена и оплачена. Мы скоро свяжемся с вами.');
-    } else if (paymentStatus === 'error') {
-        showModal('Ошибка оплаты', 'Оплата не прошла. Попробуйте оплатить анкету ещё раз или свяжитесь с нами.');
     }
 
     modalClose.addEventListener('click', () => modal.classList.remove('is-open'));
@@ -348,7 +255,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             const result = await response.json();
             if (!response.ok || !result.success) throw new Error(result.message || 'Ошибка отправки формы.');
             form.reset();
-            showModal('Необходима оплата', result.message || 'Для анализа анкеты необходимо оплатить услугу.', result.paymentUrl || '');
+            showModal('Успешно отправлено', result.message || 'Анкета успешно отправлена. Спасибо!');
         } catch (error) {
             showModal('Не удалось отправить', error.message || 'Попробуйте позже.');
         } finally {
