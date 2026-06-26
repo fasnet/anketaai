@@ -1528,6 +1528,7 @@ $userPayload = [
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
             'warning' => $api['error'],
             'response_id' => $responseId,
+            'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
             'patient' => $patient,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
@@ -1541,6 +1542,7 @@ $userPayload = [
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
             'warning' => 'VSEGPT вернул невалидный JSON.',
             'response_id' => $responseId,
+            'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
             'patient' => $patient,
             'raw' => $api['raw'],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -1559,6 +1561,7 @@ $userPayload = [
         'ok' => (bool)$responseId,
         'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
         'response_id' => $responseId,
+        'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
         'patient' => $patient,
         'analysis' => is_array($analysis) ? $analysis : null,
         'analysis_raw' => $content,
