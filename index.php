@@ -2007,6 +2007,7 @@ $listItems = questionnaire_list_items($sections);
 <?php else: ?>
 
 <div class="wrap">
+    <?php $initialPaymentUrl = prodamus_payment_url('anketa-' . date('YmdHis'), []); ?>
     <div class="hero">
         <div class="hero-title">
             <div class="hero-logo" aria-hidden="true"><?= hero_logo_svg() ?></div>
@@ -2020,7 +2021,7 @@ $listItems = questionnaire_list_items($sections);
         </div>
     </div>
 
-    <form id="quizForm">
+    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>">
         <input type="hidden" name="action" value="analyze">
         <input type="hidden" name="filled_at" value="<?= e(date('Y-m-d')) ?>">
 
@@ -2120,6 +2121,7 @@ $listItems = questionnaire_list_items($sections);
     const successModalTitle = document.getElementById('successModalTitle');
     const successModalText = document.getElementById('successModalText');
     const paymentLink = document.getElementById('paymentLink');
+    const pendingSurveyStorageKey = 'anketaai_pending_survey';
 
     function escapeHtml(str) {
         return String(str)
@@ -2156,6 +2158,63 @@ $listItems = questionnaire_list_items($sections);
     }
     closeSuccessModal?.addEventListener('click', closeSuccess);
     successModal?.addEventListener('click', (ev) => { if (ev.target === successModal) closeSuccess(); });
+
+    function savePendingSurvey() {
+        if (!form) return;
+        const fd = new FormData(form);
+        const payload = [];
+        fd.forEach((value, key) => payload.push([key, value]));
+        localStorage.setItem(pendingSurveyStorageKey, JSON.stringify(payload));
+    }
+
+    function readPendingSurveyFormData() {
+        const raw = localStorage.getItem(pendingSurveyStorageKey);
+        if (!raw) return null;
+        try {
+            const entries = JSON.parse(raw);
+            if (!Array.isArray(entries)) return null;
+            const fd = new FormData();
+            entries.forEach((entry) => {
+                if (Array.isArray(entry) && entry.length >= 2) fd.append(entry[0], entry[1]);
+            });
+            if (!fd.has('action')) fd.append('action', 'analyze');
+            return fd;
+        } catch (err) {
+            return null;
+        }
+    }
+
+    async function sendSurveyToAiAfterPayment() {
+        const fd = readPendingSurveyFormData();
+        if (!fd) {
+            openSuccessModal({
+                title: 'Оплата прошла успешно',
+                text: 'Не удалось найти сохраненную анкету в браузере. Пожалуйста, отправьте анкету еще раз.'
+            });
+            return;
+        }
+
+        openSuccessModal({
+            title: 'Оплата прошла успешно',
+            text: 'Отправляем анкету на анализ ИИ. Пожалуйста, дождитесь подтверждения.'
+        });
+
+        try {
+            const res = await fetch(location.pathname + '?page=form', {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
+            localStorage.removeItem(pendingSurveyStorageKey);
+            openSuccessModal({
+                title: 'Анкета успешно отправлена и оплачена',
+                text: 'Спасибо! Оплата прошла успешно, анкета отправлена. Мы скоро свяжемся с вами.'
+            });
+        } catch (err) {
+            openSuccessModal({
+                title: 'Ошибка отправки анкеты после оплаты',
+                text: err.message || 'Оплата прошла, но анкету не удалось отправить. Пожалуйста, свяжитесь с клиникой.'
+            });
+        }
+    }
 
     function initHintsEditor() {
         if (!aiHintsForm) return;
@@ -2276,35 +2335,26 @@ $listItems = questionnaire_list_items($sections);
         sexInputs.forEach(el => el.addEventListener('change', toggleSexBlocks));
         toggleSexBlocks();
 
-        form.addEventListener('submit', async (ev) => {
+        form.addEventListener('submit', (ev) => {
             ev.preventDefault();
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Отправка...';
-            if (result) {
-                result.style.display = 'block';
-                result.innerHTML = '<p>Отправка и анализ...</p>';
-            }
-            try {
-                const fd = new FormData(form);
-                const res = await fetch(location.href, {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
-                const data = await res.json();
-                if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
+            const paymentUrl = form.dataset.paymentUrl || '';
+            if (!paymentUrl) {
                 if (result) {
-                    result.style.display = 'none';
-                    result.innerHTML = '';
+                    result.style.display = 'block';
+                    result.innerHTML = '<div class="error">Не настроена ссылка оплаты Prodamus.</div>';
                 }
-                openSuccessModal({
-                    title: 'Для анализа анкеты необходимо ее оплатить',
-                    text: 'Анкета отправлена на анализ ИИ. Чтобы клиника получила оплату и продолжила обработку, перейдите к оплате через Prodamus.',
-                    paymentUrl: data.payment_url || '',
-                    paymentButtonText: 'Оплатить 3000 ₽'
-                });
-            } catch (err) {
-                if (result) result.innerHTML = `<div class="error">${escapeHtml(err.message || 'Неизвестная ошибка')}</div>`;
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Отправить анкету';
+                return;
             }
+            savePendingSurvey();
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Переход к оплате...';
+            openSuccessModal({
+                title: 'Для анализа анкеты необходимо ее оплатить',
+                text: 'Сейчас откроется защищенная страница оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
+                paymentUrl,
+                paymentButtonText: 'Перейти к оплате 3000 ₽'
+            });
+            window.location.href = paymentUrl;
         });
     }
 
@@ -2360,10 +2410,7 @@ $listItems = questionnaire_list_items($sections);
 
     const paymentStatus = new URLSearchParams(location.search).get('payment');
     if (paymentStatus === 'success') {
-        openSuccessModal({
-            title: 'Анкета успешно отправлена и оплачена',
-            text: 'Спасибо! Оплата прошла успешно, анкета отправлена. Мы скоро свяжемся с вами.'
-        });
+        sendSurveyToAiAfterPayment();
     } else if (paymentStatus === 'error') {
         openSuccessModal({
             title: 'Ошибка оплаты',
