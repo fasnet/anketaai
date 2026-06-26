@@ -9,11 +9,10 @@ declare(strict_types=1);
  * questionnaire_questions, questionnaire_question_options и подсказки).
  * Ответы пациентов этим скриптом не импортируются.
  *
- * Запуск из CLI:
- *   php update_default_questionnaire.php
+ * Запуск из браузера:
+ *   https://example.com/update_default_questionnaire.php
  *
- * Можно передать другой локальный путь первым аргументом:
- *   php update_default_questionnaire.php /path/to/patient_responses.json
+ * Скрипт всегда читает локальный patient_responses.json из директории сайта.
  *
  * Можно переопределить подключение и ID анкеты через env:
  *   DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_CHARSET, QUESTIONNAIRE_ID
@@ -23,12 +22,35 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'import_patient_responses.php';
 
 const DEFAULT_PATIENT_RESPONSES_FILE = 'patient_responses.json';
 
-function patient_responses_path(array $argv): string
+function update_default_questionnaire_is_cli(): bool
 {
-    $path = (string)($argv[1] ?? (__DIR__ . DIRECTORY_SEPARATOR . DEFAULT_PATIENT_RESPONSES_FILE));
-    if ($path === '') {
-        $path = __DIR__ . DIRECTORY_SEPARATOR . DEFAULT_PATIENT_RESPONSES_FILE;
+    return PHP_SAPI === 'cli';
+}
+
+function update_default_questionnaire_send_text_headers(int $statusCode = 200): void
+{
+    if (update_default_questionnaire_is_cli() || headers_sent()) {
+        return;
     }
+
+    http_response_code($statusCode);
+    header('Content-Type: text/plain; charset=utf-8');
+}
+
+function update_default_questionnaire_write_error(string $message): void
+{
+    if (update_default_questionnaire_is_cli() && defined('STDERR')) {
+        fwrite(STDERR, $message . PHP_EOL);
+        return;
+    }
+
+    update_default_questionnaire_send_text_headers(500);
+    echo $message . PHP_EOL;
+}
+
+function patient_responses_path(): string
+{
+    $path = __DIR__ . DIRECTORY_SEPARATOR . DEFAULT_PATIENT_RESPONSES_FILE;
     if (!is_file($path)) {
         throw new RuntimeException('Файл patient_responses.json не найден: ' . $path);
     }
@@ -90,13 +112,14 @@ function update_default_questionnaire_from_file(string $path): array
 }
 
 try {
-    $result = update_default_questionnaire_from_file(patient_responses_path($argv));
+    update_default_questionnaire_send_text_headers();
+    $result = update_default_questionnaire_from_file(patient_responses_path());
     echo 'Дефолтная анкета обновлена: анкета=' . $result['questionnaire_id']
         . ', название=' . $result['title']
         . ', разделов=' . $result['sections']
         . ', вопросов=' . $result['questions']
         . ', источник=' . $result['source_path'] . PHP_EOL;
 } catch (Throwable $e) {
-    fwrite(STDERR, 'Ошибка обновления дефолтной анкеты: ' . $e->getMessage() . PHP_EOL);
+    update_default_questionnaire_write_error('Ошибка обновления дефолтной анкеты: ' . $e->getMessage());
     exit(1);
 }
