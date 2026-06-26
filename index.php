@@ -7,8 +7,11 @@ declare(strict_types=1);
 const VSEGPT_API_KEY = '...';
 const VSEGPT_API_URL = 'https://api.vsegpt.ru:7090/v1/chat/completions';
 const VSEGPT_MODEL   = 'gpt-4o-mini';
-const AI_HINTS_FILE   = __DIR__ . '/ai_hints.json';
-const PATIENT_RESPONSES_FILE = __DIR__ . '/patient_responses.json';
+const DB_HOST = 'localhost';
+const DB_NAME = 'anketaai';
+const DB_USER = 'anketaai';
+const DB_PASS = 'password';
+const DB_CHARSET = 'utf8mb4';
 const RNOVA_API_URL = 'https://app.rnova.org/api/public/';
 const RNOVA_API_TOKEN = '';
 const RNOVA_ADMIN_ROLE_ID = 12460;
@@ -36,36 +39,377 @@ function postv($key, $default = '') {
     return $_POST[$key] ?? $default;
 }
 
-function read_json_file($file, $default) {
-    if (!is_file($file)) {
-        return $default;
+
+function db() {
+    static $pdo = null;
+    if ($pdo instanceof PDO) return $pdo;
+    $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=' . DB_CHARSET;
+    $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ]);
+    db_init($pdo);
+    return $pdo;
+}
+
+function db_init(PDO $pdo) {
+    static $done = false;
+    if ($done) return;
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaires (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        deleted_at DATETIME NULL
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaire_sections (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        questionnaire_id VARCHAR(64) NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        title VARCHAR(255) NOT NULL,
+        sex VARCHAR(16) NULL,
+        INDEX questionnaire_idx (questionnaire_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaire_questions (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        section_id INT UNSIGNED NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        name VARCHAR(128) NOT NULL,
+        type VARCHAR(32) NOT NULL,
+        label TEXT NOT NULL,
+        other_name VARCHAR(128) NULL,
+        min_value VARCHAR(32) NULL,
+        max_value VARCHAR(32) NULL,
+        step_value VARCHAR(32) NULL,
+        INDEX section_idx (section_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaire_question_options (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        question_id INT UNSIGNED NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        option_value TEXT NOT NULL,
+        INDEX question_idx (question_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaire_question_hints (
+        questionnaire_id VARCHAR(64) NOT NULL,
+        question_name VARCHAR(128) NOT NULL,
+        hint TEXT NULL,
+        PRIMARY KEY (questionnaire_id, question_name)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS questionnaire_option_hints (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        questionnaire_id VARCHAR(64) NOT NULL,
+        question_name VARCHAR(128) NOT NULL,
+        option_value VARCHAR(255) NOT NULL,
+        hint TEXT NULL,
+        UNIQUE KEY questionnaire_option_unique (questionnaire_id, question_name, option_value)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS patient_responses (
+        id VARCHAR(64) NOT NULL PRIMARY KEY,
+        questionnaire_id VARCHAR(64) NULL,
+        survey VARCHAR(255) NULL,
+        category VARCHAR(255) NULL,
+        status VARCHAR(32) NULL,
+        progress INT NOT NULL DEFAULT 0,
+        filled_answers INT NOT NULL DEFAULT 0,
+        total_answers INT NOT NULL DEFAULT 0,
+        patient_surname VARCHAR(255) NULL,
+        patient_name VARCHAR(255) NULL,
+        patient_patronymic VARCHAR(255) NULL,
+        patient_dob VARCHAR(32) NULL,
+        patient_phone VARCHAR(64) NULL,
+        patient_email VARCHAR(255) NULL,
+        patient_sex VARCHAR(32) NULL,
+        patient_height VARCHAR(32) NULL,
+        patient_weight VARCHAR(32) NULL,
+        patient_waist VARCHAR(32) NULL,
+        patient_filled_at VARCHAR(32) NULL,
+        analysis_raw LONGTEXT NULL,
+        ai_answer_html LONGTEXT NULL,
+        mis_sent_at VARCHAR(64) NULL,
+        mis_patient_id VARCHAR(64) NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        INDEX questionnaire_id_idx (questionnaire_id),
+        INDEX status_idx (status)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    db_drop_columns($pdo, 'questionnaires', ['sections_json', 'hints_json']);
+    db_drop_columns($pdo, 'patient_responses', ['response_json']);
+    db_ensure_columns($pdo, 'patient_responses', [
+        'survey' => 'VARCHAR(255) NULL', 'category' => 'VARCHAR(255) NULL', 'progress' => 'INT NOT NULL DEFAULT 0',
+        'filled_answers' => 'INT NOT NULL DEFAULT 0', 'total_answers' => 'INT NOT NULL DEFAULT 0',
+        'patient_surname' => 'VARCHAR(255) NULL', 'patient_name' => 'VARCHAR(255) NULL', 'patient_patronymic' => 'VARCHAR(255) NULL',
+        'patient_dob' => 'VARCHAR(32) NULL', 'patient_phone' => 'VARCHAR(64) NULL', 'patient_email' => 'VARCHAR(255) NULL',
+        'patient_sex' => 'VARCHAR(32) NULL', 'patient_height' => 'VARCHAR(32) NULL', 'patient_weight' => 'VARCHAR(32) NULL',
+        'patient_waist' => 'VARCHAR(32) NULL', 'patient_filled_at' => 'VARCHAR(32) NULL', 'analysis_raw' => 'LONGTEXT NULL',
+        'ai_answer_html' => 'LONGTEXT NULL', 'mis_sent_at' => 'VARCHAR(64) NULL', 'mis_patient_id' => 'VARCHAR(64) NULL'
+    ]);
+    $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_sections (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        response_id VARCHAR(64) NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        title VARCHAR(255) NOT NULL,
+        INDEX response_idx (response_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_answers (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        response_section_id INT UNSIGNED NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        question TEXT NOT NULL,
+        answer_text LONGTEXT NULL,
+        INDEX section_idx (response_section_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_hints (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        response_id VARCHAR(64) NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        hint TEXT NOT NULL,
+        INDEX response_hint_idx (response_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_history (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        response_id VARCHAR(64) NOT NULL,
+        position INT NOT NULL DEFAULT 0,
+        event_date VARCHAR(64) NOT NULL,
+        event_text TEXT NOT NULL,
+        INDEX response_history_idx (response_id)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+
+    $done = true;
+}
+
+function db_drop_columns(PDO $pdo, $table, $columns) {
+    foreach ($columns as $name) {
+        $stmt = $pdo->prepare('SHOW COLUMNS FROM `' . str_replace('`', '', (string)$table) . '` LIKE ?');
+        $stmt->execute([(string)$name]);
+        if ($stmt->fetch()) {
+            $pdo->exec('ALTER TABLE `' . str_replace('`', '', (string)$table) . '` DROP COLUMN `' . str_replace('`', '', (string)$name) . '`');
+        }
     }
-    $raw = file_get_contents($file);
+}
+
+function db_ensure_columns(PDO $pdo, $table, $columns) {
+    foreach ($columns as $name => $definition) {
+        $stmt = $pdo->prepare('SHOW COLUMNS FROM `' . str_replace('`', '', (string)$table) . '` LIKE ?');
+        $stmt->execute([(string)$name]);
+        if (!$stmt->fetch()) {
+            $pdo->exec('ALTER TABLE `' . str_replace('`', '', (string)$table) . '` ADD COLUMN `' . str_replace('`', '', (string)$name) . '` ' . $definition);
+        }
+    }
+}
+
+function db_json_decode($raw, $default = []) {
     $data = json_decode((string)$raw, true);
     return is_array($data) ? $data : $default;
 }
 
-function write_json_file($file, $data) {
-    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($json === false) {
-        return false;
+function db_date($iso = null) {
+    if (!$iso) return date('Y-m-d H:i:s');
+    try { return (new DateTimeImmutable((string)$iso))->format('Y-m-d H:i:s'); } catch (Throwable $e) { return date('Y-m-d H:i:s'); }
+}
+
+function questionnaire_id_from_title($title) {
+    $latin = function_exists('transliterator_transliterate') ? (transliterator_transliterate('Any-Latin; Latin-ASCII', (string)$title) ?: (string)$title) : (string)$title;
+    $slug = strtolower(trim(preg_replace('/[^a-zA-Z0-9]+/u', '-', $latin), '-'));
+    return ($slug ?: 'questionnaire') . '-' . bin2hex(random_bytes(3));
+}
+
+function questionnaire_save_structure($questionnaireId, $sections) {
+    $pdo = db();
+    $sectionIds = $pdo->prepare('SELECT id FROM questionnaire_sections WHERE questionnaire_id=?');
+    $sectionIds->execute([(string)$questionnaireId]);
+    $ids = $sectionIds->fetchAll(PDO::FETCH_COLUMN);
+    if ($ids) {
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        $questionIds = $pdo->prepare("SELECT id FROM questionnaire_questions WHERE section_id IN ($in)");
+        $questionIds->execute($ids);
+        $qids = $questionIds->fetchAll(PDO::FETCH_COLUMN);
+        if ($qids) {
+            $qin = implode(',', array_fill(0, count($qids), '?'));
+            $pdo->prepare("DELETE FROM questionnaire_question_options WHERE question_id IN ($qin)")->execute($qids);
+        }
+        $pdo->prepare("DELETE FROM questionnaire_questions WHERE section_id IN ($in)")->execute($ids);
+        $pdo->prepare('DELETE FROM questionnaire_sections WHERE questionnaire_id=?')->execute([(string)$questionnaireId]);
     }
-    return file_put_contents($file, $json . "\n", LOCK_EX) !== false;
+
+    $insertSection = $pdo->prepare('INSERT INTO questionnaire_sections (questionnaire_id, position, title, sex) VALUES (?,?,?,?)');
+    $insertQuestion = $pdo->prepare('INSERT INTO questionnaire_questions (section_id, position, name, type, label, other_name, min_value, max_value, step_value) VALUES (?,?,?,?,?,?,?,?,?)');
+    $insertOption = $pdo->prepare('INSERT INTO questionnaire_question_options (question_id, position, option_value) VALUES (?,?,?)');
+    foreach (array_values($sections) as $si => $section) {
+        $insertSection->execute([(string)$questionnaireId, $si, (string)($section['title'] ?? 'Раздел'), $section['sex'] ?? null]);
+        $sectionId = (int)$pdo->lastInsertId();
+        foreach (array_values($section['questions'] ?? []) as $qi => $q) {
+            $insertQuestion->execute([$sectionId, $qi, (string)($q['name'] ?? ('q_' . $qi)), (string)($q['type'] ?? 'text'), (string)($q['label'] ?? 'Вопрос'), $q['other_name'] ?? null, $q['min'] ?? null, $q['max'] ?? null, $q['step'] ?? null]);
+            $questionId = (int)$pdo->lastInsertId();
+            foreach (array_values($q['options'] ?? []) as $oi => $option) {
+                $insertOption->execute([$questionId, $oi, is_array($option) ? (string)($option['label'] ?? '') : (string)$option]);
+            }
+        }
+    }
+}
+
+function questionnaire_load_sections($questionnaireId) {
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM questionnaire_sections WHERE questionnaire_id=? ORDER BY position, id');
+    $stmt->execute([(string)$questionnaireId]);
+    $sections = [];
+    foreach ($stmt->fetchAll() as $sectionRow) {
+        $qstmt = $pdo->prepare('SELECT * FROM questionnaire_questions WHERE section_id=? ORDER BY position, id');
+        $qstmt->execute([(int)$sectionRow['id']]);
+        $questions = [];
+        foreach ($qstmt->fetchAll() as $qrow) {
+            $ostmt = $pdo->prepare('SELECT option_value FROM questionnaire_question_options WHERE question_id=? ORDER BY position, id');
+            $ostmt->execute([(int)$qrow['id']]);
+            $q = ['name' => (string)$qrow['name'], 'type' => (string)$qrow['type'], 'label' => (string)$qrow['label']];
+            $options = array_map('strval', $ostmt->fetchAll(PDO::FETCH_COLUMN));
+            if ($options) $q['options'] = $options;
+            foreach (['other_name' => 'other_name', 'min_value' => 'min', 'max_value' => 'max', 'step_value' => 'step'] as $col => $key) {
+                if (($qrow[$col] ?? '') !== '') $q[$key] = $qrow[$col];
+            }
+            $questions[] = $q;
+        }
+        $section = ['title' => (string)$sectionRow['title'], 'questions' => $questions];
+        if (!empty($sectionRow['sex'])) $section['sex'] = (string)$sectionRow['sex'];
+        $sections[] = $section;
+    }
+    return $sections;
+}
+
+function questionnaire_from_row($row) {
+    $sections = questionnaire_load_sections($row['id']);
+    if (!$sections && (string)$row['id'] === 'health') {
+        $sections = questionnaire_sections_static();
+        questionnaire_save_structure('health', $sections);
+        save_hint_config(default_hint_config($sections), 'health');
+    }
+    return [
+        'id' => (string)$row['id'],
+        'title' => (string)$row['title'],
+        'sections' => $sections,
+        'created_at' => (string)$row['created_at'],
+        'updated_at' => (string)$row['updated_at'],
+    ];
+}
+
+function ensure_default_questionnaire() {
+    $pdo = db();
+    $exists = $pdo->query("SELECT COUNT(*) FROM questionnaires WHERE deleted_at IS NULL")->fetchColumn();
+    if ((int)$exists > 0) return;
+    $sections = questionnaire_sections_static();
+    $now = date('Y-m-d H:i:s');
+    $stmt = $pdo->prepare('INSERT INTO questionnaires (id,title,created_at,updated_at) VALUES (?,?,?,?)');
+    $stmt->execute(['health', 'Анкета здоровья', $now, $now]);
+    questionnaire_save_structure('health', $sections);
+    save_hint_config(default_hint_config($sections), 'health');
+}
+
+function questionnaires_all() {
+    ensure_default_questionnaire();
+    $rows = db()->query('SELECT * FROM questionnaires WHERE deleted_at IS NULL ORDER BY updated_at DESC')->fetchAll();
+    return array_map('questionnaire_from_row', $rows);
+}
+
+function questionnaire_find($id = null) {
+    ensure_default_questionnaire();
+    if ($id) {
+        $stmt = db()->prepare('SELECT * FROM questionnaires WHERE id=? AND deleted_at IS NULL');
+        $stmt->execute([(string)$id]);
+        $row = $stmt->fetch();
+        if ($row) return questionnaire_from_row($row);
+    }
+    $row = db()->query('SELECT * FROM questionnaires WHERE deleted_at IS NULL ORDER BY created_at ASC LIMIT 1')->fetch();
+    return $row ? questionnaire_from_row($row) : null;
+}
+
+function db_answer_to_string($answer) {
+    return is_array($answer) ? implode("\n", array_map('strval', $answer)) : (string)$answer;
+}
+
+function db_answer_from_string($answer) {
+    $answer = (string)$answer;
+    return strpos($answer, "\n") !== false ? explode("\n", $answer) : $answer;
+}
+
+function response_from_row($row) {
+    $patient = [
+        'surname' => $row['patient_surname'] ?? '', 'name' => $row['patient_name'] ?? '', 'patronymic' => $row['patient_patronymic'] ?? '',
+        'dob' => $row['patient_dob'] ?? '', 'phone' => $row['patient_phone'] ?? '', 'email' => $row['patient_email'] ?? '',
+        'sex' => $row['patient_sex'] ?? '', 'height' => $row['patient_height'] ?? '', 'weight' => $row['patient_weight'] ?? '',
+        'waist' => $row['patient_waist'] ?? '', 'filled_at' => $row['patient_filled_at'] ?? '',
+    ];
+    $sections = [];
+    $sstmt = db()->prepare('SELECT * FROM patient_response_sections WHERE response_id=? ORDER BY position, id');
+    $sstmt->execute([(string)$row['id']]);
+    foreach ($sstmt->fetchAll() as $srow) {
+        $astmt = db()->prepare('SELECT * FROM patient_response_answers WHERE response_section_id=? ORDER BY position, id');
+        $astmt->execute([(int)$srow['id']]);
+        $answers = [];
+        foreach ($astmt->fetchAll() as $arow) {
+            $answers[] = ['question' => (string)$arow['question'], 'answer' => db_answer_from_string($arow['answer_text'] ?? '')];
+        }
+        $sections[] = ['section' => (string)$srow['title'], 'answers' => $answers];
+    }
+    $hstmt = db()->prepare('SELECT hint FROM patient_response_hints WHERE response_id=? ORDER BY position, id');
+    $hstmt->execute([(string)$row['id']]);
+    $historyStmt = db()->prepare('SELECT event_date, event_text FROM patient_response_history WHERE response_id=? ORDER BY position, id');
+    $historyStmt->execute([(string)$row['id']]);
+    $history = [];
+    foreach ($historyStmt->fetchAll() as $event) $history[] = ['date' => $event['event_date'], 'event' => $event['event_text']];
+    return [
+        'id' => (string)$row['id'], 'questionnaire_id' => $row['questionnaire_id'] ?? null, 'patient' => $patient,
+        'survey' => $row['survey'] ?? 'Анкета здоровья', 'category' => $row['category'] ?? 'Комплексный превентивный приём',
+        'status' => $row['status'] ?? 'draft', 'progress' => (int)($row['progress'] ?? 0), 'filled_answers' => (int)($row['filled_answers'] ?? 0), 'total_answers' => (int)($row['total_answers'] ?? 0),
+        'created_at' => $row['created_at'] ?? '', 'updated_at' => $row['updated_at'] ?? '', 'answers' => $sections,
+        'hints' => array_map('strval', $hstmt->fetchAll(PDO::FETCH_COLUMN)), 'analysis' => null, 'analysis_raw' => $row['analysis_raw'] ?? '',
+        'ai_answer_html' => $row['ai_answer_html'] ?: '<p>ИИ-анализ пока не сформирован.</p>', 'mis_sent_at' => $row['mis_sent_at'] ?? null, 'mis_patient_id' => $row['mis_patient_id'] ?? null, 'history' => $history,
+    ];
 }
 
 function load_patient_responses() {
-    $data = read_json_file(PATIENT_RESPONSES_FILE, ['responses' => []]);
-    if (!isset($data['responses']) || !is_array($data['responses'])) {
-        $data['responses'] = [];
-    }
-    return $data;
+    $rows = db()->query('SELECT * FROM patient_responses ORDER BY created_at DESC')->fetchAll();
+    return ['responses' => array_map('response_from_row', $rows)];
 }
 
 function save_patient_responses($data) {
-    $data['updated_at'] = date('c');
-    return write_json_file(PATIENT_RESPONSES_FILE, $data);
+    if (empty($data['responses']) || !is_array($data['responses'])) return true;
+    foreach ($data['responses'] as $response) {
+        if (is_array($response) && !empty($response['id'])) upsert_patient_response($response);
+    }
+    return true;
 }
 
+function upsert_patient_response($record) {
+    $stmt = db()->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, mis_sent_at, mis_patient_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), updated_at=VALUES(updated_at)');
+    $patient = is_array($record['patient'] ?? null) ? $record['patient'] : [];
+    $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
+    if (!$ok) return false;
+    $id = (string)$record['id'];
+    db()->prepare('DELETE FROM patient_response_hints WHERE response_id=?')->execute([$id]);
+    db()->prepare('DELETE FROM patient_response_history WHERE response_id=?')->execute([$id]);
+    $oldSections = db()->prepare('SELECT id FROM patient_response_sections WHERE response_id=?');
+    $oldSections->execute([$id]);
+    $sectionIds = $oldSections->fetchAll(PDO::FETCH_COLUMN);
+    if ($sectionIds) {
+        db()->prepare('DELETE FROM patient_response_answers WHERE response_section_id IN (' . implode(',', array_fill(0, count($sectionIds), '?')) . ')')->execute($sectionIds);
+    }
+    db()->prepare('DELETE FROM patient_response_sections WHERE response_id=?')->execute([$id]);
+    $insertSection = db()->prepare('INSERT INTO patient_response_sections (response_id, position, title) VALUES (?,?,?)');
+    $insertAnswer = db()->prepare('INSERT INTO patient_response_answers (response_section_id, position, question, answer_text) VALUES (?,?,?,?)');
+    foreach (array_values($record['answers'] ?? []) as $si => $section) {
+        $insertSection->execute([$id, $si, (string)($section['section'] ?? '')]);
+        $sectionId = (int)db()->lastInsertId();
+        foreach (array_values($section['answers'] ?? []) as $ai => $answer) {
+            $insertAnswer->execute([$sectionId, $ai, (string)($answer['question'] ?? ''), db_answer_to_string($answer['answer'] ?? '')]);
+        }
+    }
+    $hintStmt = db()->prepare('INSERT INTO patient_response_hints (response_id, position, hint) VALUES (?,?,?)');
+    foreach (array_values($record['hints'] ?? []) as $i => $hint) $hintStmt->execute([$id, $i, (string)$hint]);
+    $historyStmt = db()->prepare('INSERT INTO patient_response_history (response_id, position, event_date, event_text) VALUES (?,?,?,?)');
+    foreach (array_values($record['history'] ?? []) as $i => $event) $historyStmt->execute([$id, $i, (string)($event['date'] ?? ''), (string)($event['event'] ?? '')]);
+    return true;
+}
 
 function app_base_url() {
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
@@ -410,7 +754,8 @@ function build_response_record($sections, $patient, $readableAnswers, $hints, $a
     return [
         'id' => date('YmdHis') . '-' . bin2hex(random_bytes(3)),
         'patient' => $patient,
-        'survey' => 'Анкета здоровья',
+        'survey' => $GLOBALS['current_response_survey_title'] ?? 'Анкета здоровья',
+        'questionnaire_id' => $GLOBALS['current_response_questionnaire_id'] ?? null,
         'category' => 'Комплексный превентивный приём',
         'status' => $completion['filled'] > 0 ? 'in_work' : 'draft',
         'progress' => $completion['percent'],
@@ -430,32 +775,24 @@ function build_response_record($sections, $patient, $readableAnswers, $hints, $a
 }
 
 function add_patient_response($record) {
-    $data = load_patient_responses();
-    array_unshift($data['responses'], $record);
-    return save_patient_responses($data) ? $record['id'] : false;
+    return upsert_patient_response($record) ? $record['id'] : false;
 }
 
 function update_patient_response($id, $callback) {
-    $data = load_patient_responses();
-    foreach ($data['responses'] as &$response) {
-        if ((string)($response['id'] ?? '') === (string)$id) {
-            $response = $callback($response);
-            $response['updated_at'] = date('c');
-            unset($response);
-            return save_patient_responses($data);
-        }
-    }
-    unset($response);
-    return false;
+    $stmt = db()->prepare('SELECT * FROM patient_responses WHERE id=?');
+    $stmt->execute([(string)$id]);
+    $row = $stmt->fetch();
+    if (!$row) return false;
+    $response = response_from_row($row);
+    $response = $callback($response);
+    $response['updated_at'] = date('c');
+    return upsert_patient_response($response);
 }
 
 function delete_patient_response($id) {
-    $data = load_patient_responses();
-    $before = count($data['responses']);
-    $data['responses'] = array_values(array_filter($data['responses'], function ($response) use ($id) {
-        return (string)($response['id'] ?? '') !== (string)$id;
-    }));
-    return count($data['responses']) !== $before && save_patient_responses($data);
+    $stmt = db()->prepare('DELETE FROM patient_responses WHERE id=?');
+    $stmt->execute([(string)$id]);
+    return $stmt->rowCount() > 0;
 }
 
 function find_patient_response($id = null) {
@@ -591,39 +928,52 @@ function default_hint_config($sections) {
     return $config;
 }
 
-function load_hint_config($sections) {
+function load_hint_config($sections, $questionnaireId = null) {
     $config = default_hint_config($sections);
+    if (!$questionnaireId) {
+        return $config;
+    }
 
-    if (is_file(AI_HINTS_FILE)) {
-        $raw = file_get_contents(AI_HINTS_FILE);
-        $saved = json_decode((string)$raw, true);
-        if (is_array($saved)) {
-            $saved = normalize_hint_config($saved);
-            foreach ($saved['questions'] as $name => $savedQuestion) {
-                if (!isset($config['questions'][$name])) {
-                    continue;
-                }
-                $config['questions'][$name]['question_hint'] = trim((string)($savedQuestion['question_hint'] ?? ''));
-                foreach (($savedQuestion['options'] ?? []) as $option => $hint) {
-                    if (array_key_exists($option, $config['questions'][$name]['options'])) {
-                        $config['questions'][$name]['options'][$option] = trim((string)$hint);
-                    }
-                }
-            }
+    $stmt = db()->prepare('SELECT question_name, hint FROM questionnaire_question_hints WHERE questionnaire_id=?');
+    $stmt->execute([(string)$questionnaireId]);
+    foreach ($stmt->fetchAll() as $row) {
+        $name = (string)$row['question_name'];
+        if (isset($config['questions'][$name])) {
+            $config['questions'][$name]['question_hint'] = trim((string)($row['hint'] ?? ''));
+        }
+    }
+
+    $stmt = db()->prepare('SELECT question_name, option_value, hint FROM questionnaire_option_hints WHERE questionnaire_id=?');
+    $stmt->execute([(string)$questionnaireId]);
+    foreach ($stmt->fetchAll() as $row) {
+        $name = (string)$row['question_name'];
+        $option = (string)$row['option_value'];
+        if (isset($config['questions'][$name]['options'][$option])) {
+            $config['questions'][$name]['options'][$option] = trim((string)($row['hint'] ?? ''));
         }
     }
 
     return $config;
 }
 
-function save_hint_config($config) {
-    $config = normalize_hint_config($config);
-    $config['updated_at'] = date('c');
-    $json = json_encode($config, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($json === false) {
+function save_hint_config($config, $questionnaireId = null) {
+    if (!$questionnaireId) {
         return false;
     }
-    return file_put_contents(AI_HINTS_FILE, $json . "\n", LOCK_EX) !== false;
+    $config = normalize_hint_config($config);
+    $pdo = db();
+    $pdo->prepare('DELETE FROM questionnaire_question_hints WHERE questionnaire_id=?')->execute([(string)$questionnaireId]);
+    $pdo->prepare('DELETE FROM questionnaire_option_hints WHERE questionnaire_id=?')->execute([(string)$questionnaireId]);
+    $insertQuestion = $pdo->prepare('INSERT INTO questionnaire_question_hints (questionnaire_id, question_name, hint) VALUES (?,?,?)');
+    $insertOption = $pdo->prepare('INSERT INTO questionnaire_option_hints (questionnaire_id, question_name, option_value, hint) VALUES (?,?,?,?)');
+    foreach ($config['questions'] as $name => $qConfig) {
+        $insertQuestion->execute([(string)$questionnaireId, (string)$name, trim((string)($qConfig['question_hint'] ?? ''))]);
+        foreach (($qConfig['options'] ?? []) as $option => $hint) {
+            $insertOption->execute([(string)$questionnaireId, (string)$name, (string)$option, trim((string)$hint)]);
+        }
+    }
+    $stmt = $pdo->prepare('UPDATE questionnaires SET updated_at=? WHERE id=? AND deleted_at IS NULL');
+    return $stmt->execute([date('Y-m-d H:i:s'), (string)$questionnaireId]);
 }
 
 function hints_config_from_post($sections, $post) {
@@ -862,7 +1212,7 @@ function render_hints_page($sections, $hintConfig) {
     return $html;
 }
 
-function questionnaire_sections() {
+function questionnaire_sections_static() {
     return [
         [
             'title' => 'БЛОК 2. САМООЦЕНКА ЗДОРОВЬЯ',
@@ -1231,6 +1581,11 @@ function render_question($q) {
         if (!empty($q['other_name'])) {
             $html .= '<input type="text" name="'.e($q['other_name']).'" class="field" placeholder="Если другое — уточните">';
         }
+    } elseif ($type === 'select') {
+        $html .= '<div class="question-label">'.$label.'</div>';
+        $html .= '<select name="'.$name.'" class="field"><option value="">Выберите вариант</option>';
+        foreach (($q['options'] ?? []) as $opt) { $optLabel = is_array($opt) ? ($opt['label'] ?? '') : $opt; $html .= '<option value="'.e($optLabel).'">'.e($optLabel).'</option>'; }
+        $html .= '</select>';
     } elseif ($type === 'textarea') {
         $html .= '<div class="question-label">'.$label.'</div>';
         $html .= '<textarea name="'.$name.'" class="field" rows="3" placeholder="Введите ответ"></textarea>';
@@ -1529,16 +1884,47 @@ function send_response_to_rnova($response) {
 /*
   API endpoint
 */
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'save_questionnaire') {
+    $id = trim((string)postv('id'));
+    $title = trim((string)postv('title', 'Новая анкета')) ?: 'Новая анкета';
+    $payload = trim((string)postv('builder_json'));
+    $sections = db_json_decode($payload, []);
+    if (!$sections) $sections = questionnaire_sections_static();
+    $now = date('Y-m-d H:i:s');
+    if ($id === '') {
+        $id = questionnaire_id_from_title($title);
+        $stmt = db()->prepare('INSERT INTO questionnaires (id,title,created_at,updated_at) VALUES (?,?,?,?)');
+        $stmt->execute([$id, $title, $now, $now]);
+        questionnaire_save_structure($id, $sections);
+        save_hint_config(default_hint_config($sections), $id);
+    } else {
+        $stmt = db()->prepare('UPDATE questionnaires SET title=?, updated_at=? WHERE id=? AND deleted_at IS NULL');
+        $stmt->execute([$title, $now, $id]);
+        questionnaire_save_structure($id, $sections);
+    }
+    header('Location: ?page=questionnaires&saved=1');
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'delete_questionnaire') {
+    header('Content-Type: application/json; charset=utf-8');
+    $stmt = db()->prepare('UPDATE questionnaires SET deleted_at=?, updated_at=? WHERE id=? AND deleted_at IS NULL');
+    $ok = $stmt->execute([date('Y-m-d H:i:s'), date('Y-m-d H:i:s'), trim((string)postv('id'))]);
+    echo json_encode(['ok' => $ok, 'message' => $ok ? 'Анкета удалена.' : 'Анкета не найдена.'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'save_hints')) {
     header('Content-Type: application/json; charset=utf-8');
 
-    $sections = questionnaire_sections();
+    $questionnaire = questionnaire_find(postv('questionnaire_id', $_GET['qid'] ?? ($_GET['id'] ?? null)));
+    $sections = $questionnaire['sections'] ?? questionnaire_sections_static();
     $config = hints_config_from_post($sections, $_POST);
 
-    if (!save_hint_config($config)) {
+    if (!save_hint_config($config, $questionnaire['id'] ?? null)) {
         echo json_encode([
             'ok' => false,
-            'error' => 'Не удалось сохранить настройки ИИ в JSON-файл.',
+            'error' => 'Не удалось сохранить настройки ИИ в базе данных.',
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
     }
@@ -1617,8 +2003,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'se
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'analyze')) {
     header('Content-Type: application/json; charset=utf-8');
 
-    $sections = questionnaire_sections();
-    $hintConfig = load_hint_config($sections);
+    $questionnaire = questionnaire_find(postv('questionnaire_id', $_GET['qid'] ?? ($_GET['id'] ?? null)));
+    $sections = $questionnaire['sections'] ?? questionnaire_sections_static();
+    $hintConfig = load_hint_config($sections, $questionnaire['id'] ?? null);
     $sections = apply_hint_config($sections, $hintConfig);
 
     $surname = trim((string)postv('surname'));
@@ -1640,13 +2027,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
         'filled_at' => trim((string)postv('filled_at', date('Y-m-d'))),
     ];
 
+    $GLOBALS['current_response_survey_title'] = $questionnaire['title'] ?? 'Анкета здоровья';
+    $GLOBALS['current_response_questionnaire_id'] = $questionnaire['id'] ?? null;
     list($readableAnswers, $hints) = build_ai_payload($sections, $_POST);
     $draftRecord = build_response_record($sections, $patient, $readableAnswers, $hints);
     if (!response_has_medical_answers($readableAnswers)) {
         $responseId = add_patient_response($draftRecord);
         echo json_encode([
             'ok' => (bool)$responseId,
-            'message' => $responseId ? 'Ответ успешно сохранён без отправки в ИИ: заполнен только блок общей информации.' : 'Не удалось сохранить JSON.',
+            'message' => $responseId ? 'Ответ успешно сохранён без отправки в ИИ: заполнен только блок общей информации.' : 'Не удалось сохранить ответ в базе данных.',
             'warning' => 'VSEGPT не вызывался, потому что медицинские блоки анкеты пустые.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -1721,7 +2110,7 @@ $userPayload = [
         $responseId = add_patient_response($draftRecord);
         echo json_encode([
             'ok' => (bool)$responseId,
-            'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
+            'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'warning' => $api['error'],
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -1735,7 +2124,7 @@ $userPayload = [
         $responseId = add_patient_response($draftRecord);
         echo json_encode([
             'ok' => (bool)$responseId,
-            'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
+            'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'warning' => 'VSEGPT вернул невалидный JSON.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -1755,7 +2144,7 @@ $userPayload = [
 
     echo json_encode([
         'ok' => (bool)$responseId,
-        'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить JSON.',
+        'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
         'response_id' => $responseId,
         'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
         'patient' => $patient,
@@ -1853,18 +2242,19 @@ function status_label($status) {
     return $labels[$status] ?? 'Активна';
 }
 
-$sections = questionnaire_sections();
-$hintConfig = load_hint_config($sections);
+$page = (string)($_GET['page'] ?? 'questionnaires');
+$currentQuestionnaire = questionnaire_find($_GET['qid'] ?? null);
+$sections = $currentQuestionnaire['sections'] ?? questionnaire_sections_static();
+$hintConfig = load_hint_config($sections, $currentQuestionnaire['id'] ?? null);
 $sections = apply_hint_config($sections, $hintConfig);
-$page = (string)($_GET['page'] ?? 'responses');
-$listItems = questionnaire_list_items($sections);
+
 ?>
 <!doctype html>
 <html lang="ru">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= $page === 'form' ? 'Анкета здоровья' : ($page === 'response-view' ? 'Просмотр ответа пациента' : ($page === 'ai-settings' ? 'ИИ настройки' : 'Ответы пациентов')) ?></title>
+    <title><?= $page === 'form' ? 'Анкета здоровья' : ($page === 'response-view' ? 'Просмотр ответа пациента' : ($page === 'questionnaire-edit' ? 'Редактирование анкеты' : ($page === 'questionnaires' ? 'Анкеты' : 'Ответы пациентов'))) ?></title>
     <style>
         :root{
             --bg:#f4f6f3;
@@ -2068,13 +2458,53 @@ $listItems = questionnaire_list_items($sections);
             </div>
         </div>
         <nav class="admin-nav" aria-label="Основное меню">
-            <a class="<?= $page === 'form' ? 'is-active' : '' ?>" href="?page=form"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>Анкета</span></a>
+            <a class="<?= ($page === 'questionnaires' || $page === 'questionnaire-edit') ? 'is-active' : '' ?>" href="?page=questionnaires"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>Анкеты</span></a>
             <a class="<?= ($page === 'responses' || $page === 'response-view') ? 'is-active' : '' ?>" href="?page=responses"><svg viewBox="0 0 24 24"><path d="M4 5h14v14H4z"/><path d="M8 9h6M8 13h4M18 12l2 2 3-5"/></svg><span>Ответы пациентов</span></a>
-            <a class="<?= $page === 'ai-settings' ? 'is-active' : '' ?>" href="?page=ai-settings"><svg viewBox="0 0 24 24"><path d="M12 2l1.5 4.5L18 8l-4.5 1.5L12 14l-1.5-4.5L6 8l4.5-1.5L12 2Z"/><path d="M4 19h16M6 16h12"/></svg><span>ИИ настройки</span></a>
         </nav>
         <div class="doctor-card"><div class="doctor-avatar">👩🏻‍⚕️</div><div><div class="doctor-name">Иванова Е. А.</div><div class="doctor-role">Врач превентивной<br>медицины</div></div><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
     </aside>
-    <?php if ($page === 'ai-settings'): ?>
+    <?php if ($page === 'questionnaires'): ?>
+    <?php $questionnaires = questionnaires_all(); ?>
+    <main class="admin-main">
+        <header class="admin-header responses-header">
+            <div class="admin-title"><h1>Анкеты</h1><p>Настраивайте анкеты, ИИ-подсказки и копируйте ссылку для пациентов.</p></div>
+            <a class="create-btn" href="?page=questionnaire-edit">+ Создать анкету</a>
+        </header>
+        <section class="responses-table">
+            <div class="table-head" style="grid-template-columns:2fr 1fr 1fr 220px"><div>Название</div><div>Дата создания</div><div>Дата изменения</div><div>Действия</div></div>
+            <?php foreach ($questionnaires as $q): ?>
+                <?php $url = app_base_url() . '?page=form&qid=' . rawurlencode($q['id']); ?>
+                <div class="table-row" style="grid-template-columns:2fr 1fr 1fr 220px">
+                    <div class="survey-name"><div class="survey-icon"><?= hero_logo_svg() ?></div><div><strong><?= e($q['title']) ?></strong><span>ID: <?= e($q['id']) ?></span></div></div>
+                    <div><?= e(format_response_date($q['created_at'])) ?></div>
+                    <div><?= e(format_response_date($q['updated_at'])) ?></div>
+                    <div class="actions-cell">
+                        <a class="icon-button" href="?page=questionnaire-edit&amp;id=<?= e($q['id']) ?>" title="Редактировать">👁</a>
+                        <a class="icon-button" href="?page=questionnaire-edit&amp;id=<?= e($q['id']) ?>&amp;tab=ai" title="ИИ настройки">✦</a>
+                        <button class="icon-button copy-url-btn" type="button" data-url="<?= e($url) ?>" title="Копировать URL">⧉</button>
+                        <button class="icon-button delete-questionnaire-btn" type="button" data-id="<?= e($q['id']) ?>" title="Удалить">🗑</button>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </section>
+    </main>
+    <?php elseif ($page === 'questionnaire-edit'): ?>
+    <?php $editQuestionnaire = questionnaire_find($_GET['id'] ?? null); $editSections = $editQuestionnaire['sections'] ?? [['title'=>'Новый раздел','questions'=>[]]]; $editHints = load_hint_config($editSections, $editQuestionnaire['id'] ?? null); ?>
+    <main class="admin-main">
+        <header class="admin-header responses-header"><div class="admin-title"><h1><?= e($editQuestionnaire ? 'Редактирование анкеты' : 'Новая анкета') ?></h1><p>Добавляйте разделы и вопросы: текст, большое поле, выпадающий список, чекбоксы и радиокнопки.</p></div><a class="outline-btn" href="?page=questionnaires">← К списку</a></header>
+        <?php if (($_GET['tab'] ?? '') === 'ai' && $editQuestionnaire): ?>
+            <?= render_hints_page($editSections, $editHints) ?>
+        <?php else: ?>
+        <form method="post" id="questionnaireBuilderForm" class="view-card">
+            <input type="hidden" name="action" value="save_questionnaire"><input type="hidden" name="id" value="<?= e($editQuestionnaire['id'] ?? '') ?>"><input type="hidden" name="builder_json" id="builderJson">
+            <div class="question"><div class="question-label">Название анкеты</div><input class="field" name="title" value="<?= e($editQuestionnaire['title'] ?? 'Новая анкета') ?>" required></div>
+            <div id="builderRoot"></div>
+            <div class="actions" style="position:static;padding:18px 0 0"><button class="btn btn-secondary" type="button" id="addSectionBtn">+ Раздел</button><button class="btn" type="submit">Сохранить анкету</button></div>
+        </form>
+        <script type="application/json" id="builderInitial"><?= e(json_encode($editSections, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) ?></script>
+        <?php endif; ?>
+    </main>
+    <?php elseif ($page === 'ai-settings'): ?>
     <main class="admin-main">
         <header class="admin-header responses-header">
             <div class="admin-title"><h1>ИИ настройки</h1><p>Редактируйте подсказки ИИ для вопросов и вариантов ответа.</p></div>
@@ -2086,7 +2516,7 @@ $listItems = questionnaire_list_items($sections);
     <?php if (!$response): ?>
     <main class="admin-main view-main">
         <nav class="breadcrumbs" aria-label="Хлебные крошки"><a href="?page=responses">Ответы пациентов</a><span>›</span><span>Пусто</span></nav>
-        <section class="view-card"><h1>Ответы пациентов не найдены</h1><p>После отправки анкеты данные появятся здесь из JSON-файла.</p><a class="create-btn" href="?page=form">Заполнить анкету</a></section>
+        <section class="view-card"><h1>Ответы пациентов не найдены</h1><p>После отправки анкеты данные появятся здесь из базы данных.</p><a class="create-btn" href="?page=form">Заполнить анкету</a></section>
     </main>
     <?php else: ?>
     <?php $patient = $response['patient'] ?? []; if (!is_array($patient)) { $patient = []; } $answerSections = $response['answers'] ?? []; if (!is_array($answerSections)) { $answerSections = []; } $history = $response['history'] ?? []; if (!is_array($history)) { $history = []; } $aiHtml = sanitize_editor_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null)); ?>
@@ -2164,7 +2594,7 @@ $listItems = questionnaire_list_items($sections);
         <section class="questionnaire-table responses-table" aria-label="Ответы пациентов">
             <div class="table-head"><div>Пациент</div><div>Анкета</div><div>Дата заполнения <span class="sort-mark">↕</span></div><div>Статус</div><div>Заполнено</div><div>Действия</div></div>
             <?php if (!$responseItems): ?>
-            <div class="empty-state">Пока нет сохранённых ответов. Заполните анкету, чтобы данные появились здесь из JSON.</div>
+            <div class="empty-state">Пока нет сохранённых ответов. Заполните анкету, чтобы данные появились здесь из базы данных.</div>
             <?php endif; ?>
             <?php foreach ($responseItems as $item): ?>
             <article class="table-row">
@@ -2198,7 +2628,7 @@ $listItems = questionnaire_list_items($sections);
         </div>
     </div>
 
-    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>">
+    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>"><input type="hidden" name="questionnaire_id" value="<?= e($currentQuestionnaire['id'] ?? '') ?>">
         <input type="hidden" name="action" value="analyze">
         <input type="hidden" name="filled_at" value="<?= e(date('Y-m-d')) ?>">
 
@@ -2392,6 +2822,32 @@ $listItems = questionnaire_list_items($sections);
             });
         }
     }
+
+
+    function initQuestionnaireBuilder() {
+        const root = document.getElementById('builderRoot');
+        const initial = document.getElementById('builderInitial');
+        const out = document.getElementById('builderJson');
+        const form = document.getElementById('questionnaireBuilderForm');
+        if (!root || !initial || !out || !form) return;
+        let sections = [];
+        try { sections = JSON.parse(initial.textContent || '[]'); } catch (e) { sections = []; }
+        if (!sections.length) sections = [{title:'Новый раздел', questions:[]}];
+        const types = {text:'Маленькое текстовое поле', textarea:'Большое текстовое поле', select:'Выпадающий список', checklist:'Чекбокс', radio:'Радиобаттон'};
+        function slug(v){ return String(v||'question').toLowerCase().replace(/[^a-zа-я0-9]+/gi,'_').replace(/^_+|_+$/g,'') || ('q_'+Date.now()); }
+        function render(){
+            root.innerHTML = sections.map((sec, si) => `<div class="answer-section builder-section"><h3><span>${si+1}</span><input class="field b-section-title" data-si="${si}" value="${escapeHtml(sec.title||'')}" placeholder="Название раздела"></h3><div>${(sec.questions||[]).map((q, qi) => `<div class="question" style="display:grid;grid-template-columns:1fr 190px 1fr auto;gap:10px;align-items:end"><div><div class="question-label">Вопрос</div><input class="field b-q-label" data-si="${si}" data-qi="${qi}" value="${escapeHtml(q.label||'')}"></div><div><div class="question-label">Тип</div><select class="field b-q-type" data-si="${si}" data-qi="${qi}">${Object.entries(types).map(([k,v])=>`<option value="${k}" ${q.type===k?'selected':''}>${v}</option>`).join('')}</select></div><div><div class="question-label">Варианты (каждый с новой строки)</div><textarea class="field b-q-options" data-si="${si}" data-qi="${qi}" rows="2">${escapeHtml((q.options||[]).join('\n'))}</textarea></div><button type="button" class="icon-button b-del-q" data-si="${si}" data-qi="${qi}">🗑</button></div>`).join('')}</div><button type="button" class="outline-btn b-add-q" data-si="${si}">+ Вопрос</button> <button type="button" class="outline-btn b-del-sec" data-si="${si}">Удалить раздел</button></div>`).join('');
+        }
+        root.addEventListener('input', ev => { const t=ev.target, si=+t.dataset.si, qi=t.dataset.qi!==undefined?+t.dataset.qi:null; if(t.classList.contains('b-section-title')) sections[si].title=t.value; if(t.classList.contains('b-q-label')) { sections[si].questions[qi].label=t.value; sections[si].questions[qi].name=slug(t.value); } if(t.classList.contains('b-q-options')) sections[si].questions[qi].options=t.value.split('\n').map(x=>x.trim()).filter(Boolean); });
+        root.addEventListener('change', ev => { const t=ev.target; if(t.classList.contains('b-q-type')) sections[+t.dataset.si].questions[+t.dataset.qi].type=t.value; });
+        root.addEventListener('click', ev => { const b=ev.target.closest('button'); if(!b) return; if(b.classList.contains('b-add-q')) sections[+b.dataset.si].questions.push({name:'q_'+Date.now(), type:'text', label:'Новый вопрос', options:[]}); if(b.classList.contains('b-del-q')) sections[+b.dataset.si].questions.splice(+b.dataset.qi,1); if(b.classList.contains('b-del-sec')) sections.splice(+b.dataset.si,1); render(); });
+        document.getElementById('addSectionBtn')?.addEventListener('click', () => { sections.push({title:'Новый раздел', questions:[]}); render(); });
+        form.addEventListener('submit', () => { out.value = JSON.stringify(sections); });
+        render();
+    }
+
+    document.querySelectorAll('.copy-url-btn').forEach(button => button.addEventListener('click', async () => { try { await navigator.clipboard.writeText(button.dataset.url || ''); button.textContent='✓'; } catch(e) { prompt('Скопируйте URL анкеты', button.dataset.url || ''); } }));
+    document.querySelectorAll('.delete-questionnaire-btn').forEach(button => button.addEventListener('click', async () => { if(!confirm('Удалить анкету? Уже сохраненные ответы пациентов не изменятся.')) return; const fd=new FormData(); fd.append('action','delete_questionnaire'); fd.append('id',button.dataset.id||''); const res=await fetch(location.href,{method:'POST',body:fd,headers:{'X-Requested-With':'fetch'}}); const data=await res.json(); if(data.ok) location.reload(); else alert(data.message||'Не удалось удалить анкету'); }));
 
     function initHintsEditor() {
         if (!aiHintsForm) return;
@@ -2666,6 +3122,7 @@ $listItems = questionnaire_list_items($sections);
     initHintsEditor();
     initQuizForm();
     initAiResponseEditor();
+    initQuestionnaireBuilder();
 })();
 </script>
 <?php endif; ?>
