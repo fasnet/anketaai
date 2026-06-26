@@ -15,7 +15,7 @@ const DB_USER = 'anketaai';
 const DB_PASS = 'password';
 const DB_CHARSET = 'utf8mb4';
 const RNOVA_API_URL = 'https://app.rnova.org/api/public/';
-const RNOVA_API_TOKEN = '';
+const RNOVA_API_TOKEN = ''; // fallback; prefer RNOVA_API_TOKEN environment variable
 const RNOVA_ADMIN_ROLE_ID = 12460;
 const RNOVA_EMPLOYEE_ID = 50256;
 const PAYMENT_REQUIRED = 'Y';
@@ -435,7 +435,7 @@ function response_from_row($row) {
     foreach ($historyStmt->fetchAll() as $event) $history[] = ['date' => $event['event_date'], 'event' => $event['event_text']];
     return [
         'id' => (string)$row['id'], 'questionnaire_id' => $row['questionnaire_id'] ?? null, 'patient' => $patient,
-        'survey' => $row['survey'] ?? 'Анкета здоровья', 'category' => $row['category'] ?? 'Комплексный превентивный приём',
+        'survey' => $row['survey'] ?? 'Анкета здоровья', 'category' => $row['category'] ?? '',
         'status' => $row['status'] ?? 'draft', 'progress' => (int)($row['progress'] ?? 0), 'filled_answers' => (int)($row['filled_answers'] ?? 0), 'total_answers' => (int)($row['total_answers'] ?? 0),
         'created_at' => $row['created_at'] ?? '', 'updated_at' => $row['updated_at'] ?? '', 'answers' => $sections,
         'hints' => array_map('strval', $hstmt->fetchAll(PDO::FETCH_COLUMN)), 'analysis' => null, 'analysis_raw' => $row['analysis_raw'] ?? '',
@@ -700,6 +700,34 @@ function format_response_date($date) {
     }
 }
 
+
+function format_response_date_only($date) {
+    $date = trim((string)$date);
+    if ($date === '') {
+        return '—';
+    }
+    try {
+        return (new DateTimeImmutable($date))->format('d.m.Y');
+    } catch (Throwable $e) {
+        return preg_replace('/[\sT].*$/', '', $date) ?: $date;
+    }
+}
+
+function response_questionnaire_title($response) {
+    $title = trim((string)($response['survey'] ?? ''));
+    if ($title !== '') {
+        return $title;
+    }
+    $questionnaireId = trim((string)($response['questionnaire_id'] ?? ''));
+    if ($questionnaireId !== '') {
+        $questionnaire = questionnaire_find($questionnaireId, false);
+        if ($questionnaire && trim((string)($questionnaire['title'] ?? '')) !== '') {
+            return (string)$questionnaire['title'];
+        }
+    }
+    return 'Анкета здоровья';
+}
+
 function initials_for_patient($patient) {
     if (function_exists('mb_substr')) {
         $first = mb_substr((string)($patient['surname'] ?? ''), 0, 1, 'UTF-8');
@@ -832,7 +860,7 @@ function build_response_record($sections, $patient, $readableAnswers, $hints, $a
         'patient' => $patient,
         'survey' => $GLOBALS['current_response_survey_title'] ?? 'Анкета здоровья',
         'questionnaire_id' => $GLOBALS['current_response_questionnaire_id'] ?? null,
-        'category' => 'Комплексный превентивный приём',
+        'category' => '',
         'status' => $completion['filled'] > 0 ? 'in_work' : 'draft',
         'progress' => $completion['percent'],
         'filled_answers' => $completion['filled'],
@@ -1941,46 +1969,100 @@ function simple_pdf_document($text) {
     return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
 }
 
-function rnova_request($method, $path, $payload = null) {
-    if (trim(RNOVA_API_URL) === '' || trim(RNOVA_API_TOKEN) === '') {
-        return ['ok' => false, 'error' => 'Не настроены RNOVA_API_URL/RNOVA_API_TOKEN.'];
+function rnova_config($key, $fallback) {
+    $value = getenv($key);
+    if ($value === false || trim((string)$value) === '') {
+        return $fallback;
     }
-    $url = rtrim(RNOVA_API_URL, '/') . '/' . ltrim($path, '/');
-    $headers = ['Content-Type: application/json', 'Authorization: Bearer ' . RNOVA_API_TOKEN];
-    $json = $payload === null ? '' : json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return trim((string)$value);
+}
+
+function rnova_response_id($data) {
+    if (!is_array($data)) {
+        return null;
+    }
+    return $data['id'] ?? $data['data']['id'] ?? $data['patient']['id'] ?? $data['items'][0]['id'] ?? $data[0]['id'] ?? null;
+}
+
+function rnova_request($method, $path, $payload = null) {
+    $apiUrl = rnova_config('RNOVA_API_URL', RNOVA_API_URL);
+    $apiToken = rnova_config('RNOVA_API_TOKEN', RNOVA_API_TOKEN);
+    if (trim($apiUrl) === '' || trim($apiToken) === '') {
+        return ['ok' => false, 'error' => 'Не настроен реальный доступ к RNOVA: задайте RNOVA_API_URL и RNOVA_API_TOKEN в окружении.'];
+    }
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'error' => 'Для интеграции RNOVA требуется расширение cURL.'];
     }
+
+    $method = strtoupper((string)$method);
+    $url = rtrim($apiUrl, '/') . '/' . ltrim($path, '/');
+    $headers = [
+        'Accept: application/json',
+        'Content-Type: application/json',
+        'Authorization: Bearer ' . $apiToken,
+        'X-Auth-Token: ' . $apiToken,
+    ];
+    $options = [
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => 60,
+    ];
+    if ($payload !== null && $method !== 'GET') {
+        $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
     $ch = curl_init($url);
-    curl_setopt_array($ch, [CURLOPT_CUSTOMREQUEST => $method, CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => $headers, CURLOPT_POSTFIELDS => $json, CURLOPT_TIMEOUT => 60]);
+    curl_setopt_array($ch, $options);
     $raw = curl_exec($ch);
     $err = curl_error($ch);
     $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
     $data = json_decode((string)$raw, true);
-    return ['ok' => $http >= 200 && $http < 300, 'http' => $http, 'data' => is_array($data) ? $data : [], 'raw' => $raw];
+    $ok = $http >= 200 && $http < 300;
+    return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? $data : [], 'raw' => $raw, 'error' => $ok ? null : ('RNOVA вернула HTTP ' . $http)];
+}
+
+function rnova_patient_payload($patient) {
+    $fullName = response_full_name($patient);
+    return [
+        'surname' => trim((string)($patient['surname'] ?? '')),
+        'name' => trim((string)($patient['name'] ?? '')),
+        'patronymic' => trim((string)($patient['patronymic'] ?? '')),
+        'full_name' => $fullName,
+        'birth_date' => trim((string)($patient['dob'] ?? '')),
+        'phone' => trim((string)($patient['phone'] ?? '')),
+        'email' => trim((string)($patient['email'] ?? '')),
+        'sex' => trim((string)($patient['sex'] ?? '')),
+    ];
 }
 
 function send_response_to_rnova($response) {
     $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
     $phone = trim((string)($patient['phone'] ?? ''));
     $email = trim((string)($patient['email'] ?? ''));
-    $found = rnova_request('GET', 'patients?' . http_build_query(['phone' => $phone, 'email' => $email]));
-    $patientId = $found['data']['items'][0]['id'] ?? $found['data'][0]['id'] ?? null;
+    if ($phone === '' && $email === '') {
+        return ['ok' => false, 'error' => 'Для отправки в RNOVA нужен телефон или e-mail пациента.'];
+    }
+
+    $query = array_filter(['phone' => $phone, 'email' => $email], 'strlen');
+    $found = rnova_request('GET', 'patients?' . http_build_query($query));
+    if (!$found['ok'] && (int)($found['http'] ?? 0) >= 500) return $found;
+    $patientId = rnova_response_id($found['data'] ?? []);
     if (!$patientId) {
-        $created = rnova_request('POST', 'patients', $patient);
+        $created = rnova_request('POST', 'patients', rnova_patient_payload($patient));
         if (!$created['ok']) return $created;
-        $patientId = $created['data']['id'] ?? null;
+        $patientId = rnova_response_id($created['data'] ?? []);
     }
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
     $description = response_plain_text($response);
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
     $task = rnova_request('POST', 'tasks', [
-        'role_id' => RNOVA_ADMIN_ROLE_ID,
-        'employee_id' => RNOVA_EMPLOYEE_ID,
-        'title' => 'Анализ анкеты',
+        'role_id' => (int)rnova_config('RNOVA_ADMIN_ROLE_ID', (string)RNOVA_ADMIN_ROLE_ID),
+        'employee_id' => (int)rnova_config('RNOVA_EMPLOYEE_ID', (string)RNOVA_EMPLOYEE_ID),
+        'title' => 'Анализ анкеты ' . ($response['survey'] ?? ''),
         'description' => $description,
         'patient_id' => $patientId,
         'due_date' => $due,
@@ -2370,9 +2452,9 @@ function patient_response_items() {
             'patient_display' => $legacyPatientName !== '' ? $legacyPatientName : response_full_name($patient),
             'meta' => $metaParts ? implode(', ', $metaParts) : 'Данные пациента',
             'avatar' => initials_for_patient($patient),
-            'survey' => $response['survey'] ?? 'Анкета здоровья',
-            'category' => $response['category'] ?? 'Комплексный превентивный приём',
-            'date' => format_response_date($response['created_at'] ?? ''),
+            'survey' => response_questionnaire_title($response),
+            'category' => $response['category'] ?? '',
+            'date' => format_response_date_only($patient['filled_at'] ?? $response['created_at'] ?? ''),
             'doctor' => 'Иванова Е. А.',
             'status' => $response['status'] ?? 'completed',
             'progress' => $completion['percent'],
@@ -2391,7 +2473,7 @@ function patient_response_view_data() {
 
 function response_status_label($status) {
     $labels = [
-        'completed' => 'Завершено',
+        'completed' => 'В работе',
         'in_work' => 'В работе',
         'processed' => 'Обработана',
         'progress' => 'В процессе',
@@ -2621,7 +2703,7 @@ $sections = apply_hint_config($sections, $hintConfig);
 <?php if ($page === 'login'): ?>
 <div class="login-shell">
     <section class="login-card">
-        <div class="brand"><div class="brand-mark" aria-hidden="true"><?= hero_logo_svg() ?></div><div><div class="brand-title">ОПРОСНИК</div><div class="brand-subtitle">закрытая зона сервиса</div></div></div>
+        <div class="brand"><div class="brand-mark" aria-hidden="true"><?= hero_logo_svg() ?></div><div><div class="brand-title">AdaptogenzzClinic</div><div class="brand-subtitle">закрытая зона сервиса</div></div></div>
         <h1>Вход в сервис</h1><p>Введите логин и пароль, чтобы открыть управление анкетами и ответами пациентов.</p>
         <?php if (isset($_GET['error'])): ?><div class="login-error">Неверный логин или пароль.</div><?php endif; ?>
         <form method="post"><input type="hidden" name="action" value="login"><input type="hidden" name="next" value="<?= e($_GET['next'] ?? '?page=questionnaires') ?>"><div class="question"><div class="question-label">Логин</div><input class="field" name="login" autocomplete="username" required autofocus></div><div class="question"><div class="question-label">Пароль</div><input class="field" type="password" name="password" autocomplete="current-password" required></div><button class="btn" type="submit">Войти</button></form>
@@ -2633,8 +2715,8 @@ $sections = apply_hint_config($sections, $hintConfig);
         <div class="brand">
             <div class="brand-mark" aria-hidden="true"><?= hero_logo_svg() ?></div>
             <div>
-                <div class="brand-title">ОПРОСНИК</div>
-                <div class="brand-subtitle">для комплексного<br>превентивного приёма</div>
+                <div class="brand-title">AdaptogenzzClinic</div>
+                <div class="brand-subtitle">закрытая зона сервиса</div>
             </div>
         </div>
         <nav class="admin-nav" aria-label="Основное меню">
@@ -2647,7 +2729,7 @@ $sections = apply_hint_config($sections, $hintConfig);
     </aside>
     <?php if ($page === 'profile'): ?>
     <main class="admin-main">
-        <header class="admin-header responses-header"><div class="admin-title"><h1>Профиль</h1><p>Измените логин и пароль для доступа к сервису.</p></div></header>
+        <header class="admin-header responses-header"><div class="admin-title"><h1>Профиль</h1></div></header>
         <section class="view-card profile-form">
             <?php if (isset($_GET['saved'])): ?><div class="notice">Профиль сохранён.</div><?php endif; ?>
             <?php if (isset($_GET['error'])): ?><div class="notice notice-error">Не удалось сохранить профиль. Проверьте логин: он должен быть уникальным и не пустым.</div><?php endif; ?>
@@ -2695,7 +2777,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?php foreach ($questionnaires as $q): ?>
                 <?php $url = app_base_url() . '?page=form&qid=' . rawurlencode($q['id']); ?>
                 <div class="table-row" style="grid-template-columns:2fr 1fr 1fr 220px">
-                    <div class="survey-name"><div class="survey-icon"><?= hero_logo_svg() ?></div><div><strong><?= e($q['title']) ?></strong><span>ID: <?= e($q['id']) ?></span></div></div>
+                    <div class="survey-name"><div class="survey-icon"><?= hero_logo_svg() ?></div><div><strong><?= e($q['title']) ?></strong></div></div>
                     <div><?= e(format_response_date($q['created_at'])) ?></div>
                     <div><?= e(format_response_date($q['updated_at'])) ?></div>
                     <div class="actions-cell">
@@ -2801,15 +2883,15 @@ $sections = apply_hint_config($sections, $hintConfig);
     <?php endif; ?>
     <?php else: ?>
     <main class="admin-main">
-        <?php $responseItems = patient_response_items(); $statusFilter = (string)($_GET['status'] ?? 'all'); if (in_array($statusFilter, ['in_work','processed'], true)) { $responseItems = array_values(array_filter($responseItems, function ($item) use ($statusFilter) { return ($item['status'] ?? '') === $statusFilter; })); } $totalResponses = count($responseItems); $uniquePatients = count(array_unique(array_map(function ($item) { return $item['patient_display']; }, $responseItems))); $completedResponses = count(array_filter($responseItems, function ($item) { return ($item['status'] ?? '') === 'completed'; })); ?>
+        <?php $responseItems = patient_response_items(); $statusFilter = (string)($_GET['status'] ?? 'all'); if (in_array($statusFilter, ['in_work','processed'], true)) { $responseItems = array_values(array_filter($responseItems, function ($item) use ($statusFilter) { return ($item['status'] ?? '') === $statusFilter; })); } $totalResponses = count($responseItems); $uniquePatients = count(array_unique(array_map(function ($item) { return $item['patient_display']; }, $responseItems))); $inWorkResponses = count(array_filter($responseItems, function ($item) { return ($item['status'] ?? '') === 'in_work'; })); ?>
         <header class="admin-header responses-header">
-            <div class="admin-title"><h1>Ответы пациентов</h1><p>Просматривайте и анализируйте ответы пациентов по анкетам.</p></div>
+            <div class="admin-title"><h1>Ответы пациентов</h1></div>
         </header>
         <form class="filters-card" method="get" style="grid-template-columns:260px 140px"><input type="hidden" name="page" value="responses"><div class="filter-field"><label>Статус</label><select class="filter-control" name="status"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>Все анкеты</option><option value="in_work" <?= $statusFilter === 'in_work' ? 'selected' : '' ?>>В работе</option><option value="processed" <?= $statusFilter === 'processed' ? 'selected' : '' ?>>Обработанные</option></select></div><button class="reset-filter" type="submit">Показать</button></form>
         <section class="response-stats" aria-label="Сводка ответов">
             <article class="stat-card stat-green"><span><?= icon_svg('<path d="M9 5h9v16H6V5h3Z"/><path d="M9 5a3 3 0 0 1 6 0H9Z"/><path d="M9 11h6M9 15h6"/>') ?></span><div><strong><?= e($totalResponses) ?></strong><p>Всего ответов</p></div></article>
             <article class="stat-card stat-blue"><span><?= icon_svg('<path d="M16 21v-2a4 4 0 0 0-8 0v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M20 21v-2a3 3 0 0 0-2-2.8"/><path d="M18 4.2a3 3 0 0 1 0 5.6"/>') ?></span><div><strong><?= e($uniquePatients) ?></strong><p>Пациент</p></div></article>
-            <article class="stat-card stat-amber"><span><?= icon_svg('<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>') ?></span><div><strong><?= e($completedResponses) ?></strong><p>Завершено</p></div></article>
+            <article class="stat-card stat-amber"><span><?= icon_svg('<path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>') ?></span><div><strong><?= e($inWorkResponses) ?></strong><p>В работе</p></div></article>
         </section>
         <section class="questionnaire-table responses-table" aria-label="Ответы пациентов">
             <div class="table-head"><div>Пациент</div><div>Анкета</div><div>Дата заполнения <span class="sort-mark">↕</span></div><div>Статус</div><div>Заполнено</div><div>Действия</div></div>
@@ -2819,8 +2901,8 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?php foreach ($responseItems as $item): ?>
             <article class="table-row">
                 <div class="patient-name"><div class="patient-avatar" aria-hidden="true"><?= e($item['avatar']) ?></div><div><div class="survey-title"><?= e($item['patient_display']) ?></div><div class="table-muted"><?= e($item['meta']) ?></div></div></div>
-                <div><div class="survey-title"><?= e($item['survey']) ?></div><div class="table-muted"><?= e($item['category']) ?></div></div>
-                <div><div><?= e($item['date']) ?></div><div class="table-muted"><?= e($item['doctor']) ?></div></div>
+                <div><div class="survey-title"><?= e($item['survey']) ?></div></div>
+                <div><div><?= e($item['date']) ?></div></div>
                 <div><span class="response-pill response-<?= e($item['status']) ?>"><?= e(response_status_label($item['status'])) ?></span></div>
                 <div class="progress-cell"><strong><?= e($item['filled_label']) ?></strong><span class="mini-progress"><i style="width:<?= e($item['progress']) ?>%"></i></span></div>
                 <div class="actions-cell"><a class="icon-button" href="?page=response-view&amp;id=<?= e($item['id']) ?>" aria-label="Посмотреть"><svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/></svg></a><button class="icon-button delete-response-btn" type="button" data-id="<?= e($item['id']) ?>" aria-label="Удалить"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>
@@ -2839,8 +2921,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         <div class="hero-title">
             <div class="hero-logo" aria-hidden="true"><?= hero_logo_svg() ?></div>
             <div>
-                <h1>ОПРОСНИК</h1>
-                <p>для комплексного превентивного приёма</p>
+                <h1>AdaptogenzzClinic</h1>
             </div>
         </div>
         <div class="date-card">
