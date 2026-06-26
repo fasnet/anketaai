@@ -1978,10 +1978,35 @@ function rnova_config($key, $fallback) {
 }
 
 function rnova_response_id($data) {
+    if (is_numeric($data) || (is_string($data) && trim($data) !== '')) {
+        return $data;
+    }
     if (!is_array($data)) {
         return null;
     }
-    return $data['id'] ?? $data['data']['id'] ?? $data['patient']['id'] ?? $data['items'][0]['id'] ?? $data[0]['id'] ?? null;
+    foreach (['patient_id', 'id'] as $key) {
+        if (isset($data[$key]) && (is_numeric($data[$key]) || trim((string)$data[$key]) !== '')) {
+            return $data[$key];
+        }
+    }
+    foreach (['data', 'patient', 'result'] as $key) {
+        $id = rnova_response_id($data[$key] ?? null);
+        if ($id) {
+            return $id;
+        }
+    }
+    foreach (['items', 'patients'] as $key) {
+        if (isset($data[$key]) && is_array($data[$key])) {
+            $id = rnova_response_id(reset($data[$key]));
+            if ($id) {
+                return $id;
+            }
+        }
+    }
+    if (array_is_list($data) && count($data) > 0) {
+        return rnova_response_id($data[0]);
+    }
+    return null;
 }
 
 function rnova_request($method, $path, $payload = null) {
@@ -1994,48 +2019,75 @@ function rnova_request($method, $path, $payload = null) {
         return ['ok' => false, 'error' => 'Для интеграции RNOVA требуется расширение cURL.'];
     }
 
-    $method = strtoupper((string)$method);
-    $url = rtrim($apiUrl, '/') . '/' . ltrim($path, '/');
-    $headers = [
-        'Accept: application/json',
-        'Content-Type: application/json',
-        'Authorization: Bearer ' . $apiToken,
-        'X-Auth-Token: ' . $apiToken,
-    ];
-    $options = [
-        CURLOPT_CUSTOMREQUEST => $method,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_TIMEOUT => 60,
-    ];
-    if ($payload !== null && $method !== 'GET') {
-        $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $methodName = trim((string)$path, '/');
+    $query = [];
+    if (str_contains($methodName, '?')) {
+        [$methodName, $queryString] = explode('?', $methodName, 2);
+        parse_str($queryString, $query);
     }
+    $payload = is_array($payload) ? $payload : [];
+    $form = array_merge($query, $payload, ['api_key' => $apiToken]);
+    $url = rtrim($apiUrl, '/') . '/' . ltrim($methodName, '/');
 
     $ch = curl_init($url);
-    curl_setopt_array($ch, $options);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_POSTFIELDS => http_build_query($form),
+        CURLOPT_TIMEOUT => 60,
+    ]);
     $raw = curl_exec($ch);
     $err = curl_error($ch);
     $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
     $data = json_decode((string)$raw, true);
-    $ok = $http >= 200 && $http < 300;
-    return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? $data : [], 'raw' => $raw, 'error' => $ok ? null : ('RNOVA вернула HTTP ' . $http)];
+    $apiError = is_array($data) ? (int)($data['error'] ?? 0) : 0;
+    $ok = $http >= 200 && $http < 300 && $apiError === 0;
+    $error = null;
+    if (!$ok) {
+        $desc = is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
+        $error = $desc ? ('RNOVA: ' . $desc) : ('RNOVA вернула HTTP ' . $http);
+    }
+    return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? ($data['data'] ?? $data) : [], 'raw' => $raw, 'error' => $error];
+}
+
+function rnova_date($date) {
+    $date = trim((string)$date);
+    if ($date === '') return '';
+    foreach (['Y-m-d', DateTimeInterface::ATOM, 'd.m.Y'] as $format) {
+        $dt = DateTimeImmutable::createFromFormat($format, $date);
+        if ($dt instanceof DateTimeImmutable) return $dt->format('d.m.Y');
+    }
+    try {
+        return (new DateTimeImmutable($date))->format('d.m.Y');
+    } catch (Throwable $e) {
+        return $date;
+    }
+}
+
+function rnova_gender($sex) {
+    $sex = mb_strtolower(trim((string)$sex), 'UTF-8');
+    if (in_array($sex, ['м', 'муж', 'мужской', 'male', '1'], true)) return '1';
+    if (in_array($sex, ['ж', 'жен', 'женский', 'female', '2'], true)) return '2';
+    return '';
+}
+
+function rnova_filter_payload($payload) {
+    return array_filter($payload, static fn($value) => trim((string)$value) !== '');
 }
 
 function rnova_patient_payload($patient) {
-    $fullName = response_full_name($patient);
-    return [
-        'surname' => trim((string)($patient['surname'] ?? '')),
-        'name' => trim((string)($patient['name'] ?? '')),
-        'patronymic' => trim((string)($patient['patronymic'] ?? '')),
-        'full_name' => $fullName,
-        'birth_date' => trim((string)($patient['dob'] ?? '')),
-        'phone' => trim((string)($patient['phone'] ?? '')),
+    return rnova_filter_payload([
+        'last_name' => trim((string)($patient['surname'] ?? '')),
+        'first_name' => trim((string)($patient['name'] ?? '')),
+        'third_name' => trim((string)($patient['patronymic'] ?? '')),
+        'birth_date' => rnova_date($patient['dob'] ?? ''),
+        'mobile' => trim((string)($patient['phone'] ?? '')),
         'email' => trim((string)($patient['email'] ?? '')),
-        'sex' => trim((string)($patient['sex'] ?? '')),
-    ];
+        'gender' => rnova_gender($patient['sex'] ?? ''),
+    ]);
 }
 
 function send_response_to_rnova($response) {
@@ -2046,12 +2098,12 @@ function send_response_to_rnova($response) {
         return ['ok' => false, 'error' => 'Для отправки в RNOVA нужен телефон или e-mail пациента.'];
     }
 
-    $query = array_filter(['phone' => $phone, 'email' => $email], 'strlen');
-    $found = rnova_request('GET', 'patients?' . http_build_query($query));
+    $query = rnova_filter_payload(['mobile' => $phone, 'email' => $email]);
+    $found = rnova_request('POST', 'getPatient', $query);
     if (!$found['ok'] && (int)($found['http'] ?? 0) >= 500) return $found;
     $patientId = rnova_response_id($found['data'] ?? []);
     if (!$patientId) {
-        $created = rnova_request('POST', 'patients', rnova_patient_payload($patient));
+        $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient));
         if (!$created['ok']) return $created;
         $patientId = rnova_response_id($created['data'] ?? []);
     }
@@ -2059,20 +2111,20 @@ function send_response_to_rnova($response) {
 
     $description = response_plain_text($response);
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
-    $task = rnova_request('POST', 'tasks', [
+    $task = rnova_request('POST', 'createTask', [
         'role_id' => (int)rnova_config('RNOVA_ADMIN_ROLE_ID', (string)RNOVA_ADMIN_ROLE_ID),
-        'employee_id' => (int)rnova_config('RNOVA_EMPLOYEE_ID', (string)RNOVA_EMPLOYEE_ID),
+        'user_id' => (int)rnova_config('RNOVA_EMPLOYEE_ID', (string)RNOVA_EMPLOYEE_ID),
         'title' => 'Анализ анкеты ' . ($response['survey'] ?? ''),
-        'description' => $description,
+        'desc' => $description,
         'patient_id' => $patientId,
-        'due_date' => $due,
+        'due_date' => rnova_date($due),
     ]);
     if (!$task['ok']) return $task;
-    $file = rnova_request('POST', 'patients/' . rawurlencode((string)$patientId) . '/files', [
-        'name' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
-        'content_type' => 'application/pdf',
-        'content_base64' => base64_encode(simple_pdf_document($description)),
-        'section' => 'files',
+    $file = rnova_request('POST', 'uploadFile', [
+        'patient_id' => $patientId,
+        'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
+        'type' => 'pdf',
+        'content' => base64_encode(simple_pdf_document($description)),
     ]);
     if (!$file['ok']) return $file;
     return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'file' => $file['data']];
