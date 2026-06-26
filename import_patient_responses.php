@@ -441,14 +441,16 @@ function import_patient_responses(string $jsonPath): array
     ];
 }
 
-try {
-    $jsonPath = $argv[1] ?? (__DIR__ . DIRECTORY_SEPARATOR . 'patient_responses.json');
-    $result = import_patient_responses($jsonPath);
-    echo 'Импорт завершён: анкета=' . $result['questionnaire_id']
-        . ', разделов=' . $result['sections']
-        . ', вопросов=' . $result['questions']
-        . ', ответов пациентов=' . $result['responses'] . PHP_EOL;
-} catch (Throwable $e) {
-    fwrite(STDERR, 'Ошибка импорта: ' . $e->getMessage() . PHP_EOL);
-    exit(1);
+if (realpath((string)($argv[0] ?? '')) === __FILE__) {
+    try {
+        $jsonPath = $argv[1] ?? (__DIR__ . DIRECTORY_SEPARATOR . 'patient_responses.json');
+        $result = import_patient_responses($jsonPath);
+        echo 'Импорт завершён: анкета=' . $result['questionnaire_id']
+            . ', разделов=' . $result['sections']
+            . ', вопросов=' . $result['questions']
+            . ', ответов пациентов=' . $result['responses'] . PHP_EOL;
+    } catch (Throwable $e) {
+        fwrite(STDERR, 'Ошибка импорта: ' . $e->getMessage() . PHP_EOL);
+        exit(1);
+    }
 }
