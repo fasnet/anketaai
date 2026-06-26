@@ -180,22 +180,28 @@ function db_init(PDO $pdo) {
     $done = true;
 }
 
+function db_identifier($name) {
+    return '`' . str_replace('`', '', (string)$name) . '`';
+}
+
+function db_column_exists(PDO $pdo, $table, $column) {
+    $sql = 'SHOW COLUMNS FROM ' . db_identifier($table) . ' LIKE ' . $pdo->quote((string)$column);
+    $stmt = $pdo->query($sql);
+    return (bool)$stmt->fetch();
+}
+
 function db_drop_columns(PDO $pdo, $table, $columns) {
     foreach ($columns as $name) {
-        $stmt = $pdo->prepare('SHOW COLUMNS FROM `' . str_replace('`', '', (string)$table) . '` LIKE ?');
-        $stmt->execute([(string)$name]);
-        if ($stmt->fetch()) {
-            $pdo->exec('ALTER TABLE `' . str_replace('`', '', (string)$table) . '` DROP COLUMN `' . str_replace('`', '', (string)$name) . '`');
+        if (db_column_exists($pdo, $table, $name)) {
+            $pdo->exec('ALTER TABLE ' . db_identifier($table) . ' DROP COLUMN ' . db_identifier($name));
         }
     }
 }
 
 function db_ensure_columns(PDO $pdo, $table, $columns) {
     foreach ($columns as $name => $definition) {
-        $stmt = $pdo->prepare('SHOW COLUMNS FROM `' . str_replace('`', '', (string)$table) . '` LIKE ?');
-        $stmt->execute([(string)$name]);
-        if (!$stmt->fetch()) {
-            $pdo->exec('ALTER TABLE `' . str_replace('`', '', (string)$table) . '` ADD COLUMN `' . str_replace('`', '', (string)$name) . '` ' . $definition);
+        if (!db_column_exists($pdo, $table, $name)) {
+            $pdo->exec('ALTER TABLE ' . db_identifier($table) . ' ADD COLUMN ' . db_identifier($name) . ' ' . $definition);
         }
     }
 }
