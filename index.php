@@ -1937,34 +1937,120 @@ function response_plain_text($response) {
 }
 
 
+function response_html_to_text($html) {
+    $html = (string)$html;
+    $html = preg_replace('/<\s*br\s*\/?>/iu', "\n", $html);
+    $html = preg_replace('/<\s*\/\s*(p|div|li|h[1-6]|tr)\s*>/iu', "\n", $html);
+    $text = html_entity_decode(trim(strip_tags($html)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $text = preg_replace("/\n{3,}/u", "\n\n", $text);
+    return trim($text);
+}
+
+function response_pdf_text($response) {
+    $parts = [response_plain_text($response)];
+    $aiHtml = sanitize_editor_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null));
+    $aiText = response_html_to_text($aiHtml);
+    if ($aiText !== '') {
+        $parts[] = "Ответ и анализ ИИ\n" . $aiText;
+    }
+    return implode("\n\n", array_filter($parts, static fn($part) => trim((string)$part) !== ''));
+}
+
+function simple_pdf_u16($data, $offset) {
+    $value = unpack('n', substr($data, $offset, 2));
+    return (int)($value[1] ?? 0);
+}
+
+function simple_pdf_u32($data, $offset) {
+    $value = unpack('N', substr($data, $offset, 4));
+    return (int)($value[1] ?? 0);
+}
+
+function simple_pdf_font_cid_to_gid_map($fontData) {
+    $numTables = simple_pdf_u16($fontData, 4);
+    $cmapOffset = 0;
+    for ($i = 0; $i < $numTables; $i++) {
+        $entry = 12 + $i * 16;
+        if (substr($fontData, $entry, 4) === 'cmap') {
+            $cmapOffset = simple_pdf_u32($fontData, $entry + 8);
+            break;
+        }
+    }
+    if ($cmapOffset <= 0) return '';
+    $numSubtables = simple_pdf_u16($fontData, $cmapOffset + 2);
+    $format4Offset = 0;
+    for ($i = 0; $i < $numSubtables; $i++) {
+        $record = $cmapOffset + 4 + $i * 8;
+        $platform = simple_pdf_u16($fontData, $record);
+        $encoding = simple_pdf_u16($fontData, $record + 2);
+        $offset = simple_pdf_u32($fontData, $record + 4);
+        $format = simple_pdf_u16($fontData, $cmapOffset + $offset);
+        if ($format === 4 && (($platform === 3 && in_array($encoding, [1, 10], true)) || $platform === 0)) {
+            $format4Offset = $cmapOffset + $offset;
+            break;
+        }
+    }
+    if ($format4Offset <= 0) return '';
+    $segCount = intdiv(simple_pdf_u16($fontData, $format4Offset + 6), 2);
+    $endCodes = $format4Offset + 14;
+    $startCodes = $endCodes + 2 * $segCount + 2;
+    $idDeltas = $startCodes + 2 * $segCount;
+    $idRangeOffsets = $idDeltas + 2 * $segCount;
+    $gids = array_fill(0, 65536, 0);
+    for ($i = 0; $i < $segCount; $i++) {
+        $end = simple_pdf_u16($fontData, $endCodes + 2 * $i);
+        $start = simple_pdf_u16($fontData, $startCodes + 2 * $i);
+        $deltaRaw = simple_pdf_u16($fontData, $idDeltas + 2 * $i);
+        $delta = $deltaRaw >= 0x8000 ? $deltaRaw - 0x10000 : $deltaRaw;
+        $rangeOffsetPos = $idRangeOffsets + 2 * $i;
+        $rangeOffset = simple_pdf_u16($fontData, $rangeOffsetPos);
+        if ($start === 0xFFFF && $end === 0xFFFF) continue;
+        for ($code = $start; $code <= $end && $code < 65536; $code++) {
+            if ($rangeOffset === 0) {
+                $gid = ($code + $delta) & 0xFFFF;
+            } else {
+                $glyphOffset = $rangeOffsetPos + $rangeOffset + 2 * ($code - $start);
+                $gid = simple_pdf_u16($fontData, $glyphOffset);
+                if ($gid !== 0) $gid = ($gid + $delta) & 0xFFFF;
+            }
+            $gids[$code] = $gid;
+        }
+    }
+    $map = '';
+    foreach ($gids as $gid) $map .= pack('n', $gid);
+    return $map;
+}
+
 function simple_pdf_hex_text($text) {
     return strtoupper(bin2hex(mb_convert_encoding((string)$text, 'UTF-16BE', 'UTF-8')));
 }
 
 function simple_pdf_document($text, $title = 'Расшифровка анкеты') {
+    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
+    $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $lines = preg_split('/\R/u', (string)$text) ?: [];
     array_unshift($lines, (string)$title, '');
     $pdfLines = ['BT', '/F1 10 Tf', '40 800 Td'];
-    foreach (array_slice($lines, 0, 120) as $line) {
+    foreach (array_slice($lines, 0, 180) as $line) {
         $line = mb_substr($line, 0, 95, 'UTF-8');
         $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
         $pdfLines[] = '0 -14 Td';
     }
     $pdfLines[] = 'ET';
     $stream = implode("\n", $pdfLines);
-    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-    $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
     $toUnicode = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap CMapName currentdict /CMap defineresource pop end end";
     $objects = [
         '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
         '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
         '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 8 0 R >> endobj',
         '4 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [5 0 R] /ToUnicode 7 0 R >> endobj',
-        '5 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 6 0 R /DW 600 >> endobj',
+        '5 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 6 0 R /CIDToGIDMap 10 0 R /DW 600 >> endobj',
         '6 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 9 0 R >> endobj',
         '7 0 obj << /Length ' . strlen($toUnicode) . ' >> stream' . "\n" . $toUnicode . "\nendstream endobj",
         '8 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
         '9 0 obj << /Length ' . strlen($fontData) . ' /Length1 ' . strlen($fontData) . ' >> stream' . "\n" . $fontData . "\nendstream endobj",
+        '10 0 obj << /Length ' . strlen($cidToGidMap) . ' >> stream' . "\n" . $cidToGidMap . "\nendstream endobj",
     ];
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
     $offsets = [0];
@@ -2120,7 +2206,7 @@ function send_response_to_rnova($response) {
     }
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
-    $description = response_plain_text($response);
+    $description = response_pdf_text($response);
     $responseUrl = app_base_url() . '?page=response-view&id=' . rawurlencode((string)($response['id'] ?? ''));
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
     $task = rnova_request('POST', 'createTask', [
@@ -2145,6 +2231,23 @@ function send_response_to_rnova($response) {
 /*
   API endpoint
 */
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['action'] ?? '') === 'download_response_pdf')) {
+    require_auth_for_action('download_response_pdf');
+    $id = trim((string)($_GET['id'] ?? ''));
+    $response = $id !== '' ? find_patient_response($id) : null;
+    if (!$response) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Ответ пациента не найден.';
+        exit;
+    }
+    $filename = 'response-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$id) . '.pdf';
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    echo simple_pdf_document(response_pdf_text($response), 'Расшифровка анкеты');
+    exit;
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     require_auth_for_action((string)postv('action'));
@@ -2903,7 +3006,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <div class="view-actions">
                 <button class="outline-btn" type="button" id="markProcessedBtn">✓ Обработана</button>
                 <button class="outline-btn" type="button" id="sendToMisBtn">↗ Отправить в МИС</button>
-                <button class="outline-btn" type="button" id="createPdfBtn"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Создать PDF</button>
+                <a class="outline-btn" id="createPdfBtn" href="?action=download_response_pdf&amp;id=<?= e($response['id'] ?? '') ?>"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Скачать PDF</a>
                 <button class="create-btn" type="button" id="saveAiAnswerBtn"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z"/></svg>Сохранить ИИ-ответ</button>
             </div>
         </header>
@@ -3456,7 +3559,6 @@ $sections = apply_hint_config($sections, $hintConfig);
         const charCount = document.getElementById('aiCharCount');
         const saveStatus = document.getElementById('aiSaveStatus');
         const saveBtn = document.getElementById('saveAiAnswerBtn');
-        const pdfBtn = document.getElementById('createPdfBtn');
         const params = new URLSearchParams(location.search);
         const responseId = params.get('id') || '';
         const markProcessedBtn = document.getElementById('markProcessedBtn');
@@ -3515,14 +3617,6 @@ $sections = apply_hint_config($sections, $hintConfig);
         }
         markProcessedBtn?.addEventListener('click', () => postResponseAction('mark_processed', markProcessedBtn, 'Отмечаем...'));
         sendToMisBtn?.addEventListener('click', () => postResponseAction('send_to_mis', sendToMisBtn, 'Отправляем...'));
-        pdfBtn?.addEventListener('click', () => {
-            const win = window.open('', '_blank');
-            if (!win) return;
-            win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Расшифровка анкеты</title><style>body{font-family:Arial,sans-serif;line-height:1.55;padding:32px;color:#273235}h1,h2,h3{color:#00b4d8}</style></head><body><h1>Расшифровка анкеты</h1>${editor.innerHTML}</body></html>`);
-            win.document.close();
-            win.focus();
-            win.print();
-        });
     }
 
     const paymentStatus = new URLSearchParams(location.search).get('payment');
