@@ -317,13 +317,16 @@ function questionnaires_all() {
     return array_map('questionnaire_from_row', $rows);
 }
 
-function questionnaire_find($id = null) {
+function questionnaire_find($id = null, $fallback = true) {
     ensure_default_questionnaire();
     if ($id) {
         $stmt = db()->prepare('SELECT * FROM questionnaires WHERE id=? AND deleted_at IS NULL');
         $stmt->execute([(string)$id]);
         $row = $stmt->fetch();
         if ($row) return questionnaire_from_row($row);
+        if (!$fallback) return null;
+    } elseif (!$fallback) {
+        return null;
     }
     $row = db()->query('SELECT * FROM questionnaires WHERE deleted_at IS NULL ORDER BY created_at ASC LIMIT 1')->fetch();
     return $row ? questionnaire_from_row($row) : null;
@@ -2502,7 +2505,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         </section>
     </main>
     <?php elseif ($page === 'questionnaire-edit'): ?>
-    <?php $editQuestionnaire = questionnaire_find($_GET['id'] ?? null); $editSections = $editQuestionnaire['sections'] ?? [['title'=>'Новый раздел','questions'=>[]]]; $editHints = load_hint_config($editSections, $editQuestionnaire['id'] ?? null); ?>
+    <?php $editId = trim((string)($_GET['id'] ?? '')); $editQuestionnaire = $editId !== '' ? questionnaire_find($editId, false) : null; $editSections = $editQuestionnaire['sections'] ?? [['title'=>'Новый раздел','questions'=>[]]]; $editHints = load_hint_config($editSections, $editQuestionnaire['id'] ?? null); ?>
     <main class="admin-main">
         <header class="admin-header responses-header"><div class="admin-title"><h1><?= e($editQuestionnaire ? 'Редактирование анкеты' : 'Новая анкета') ?></h1><p>Добавляйте разделы и вопросы: текст, большое поле, выпадающий список, чекбоксы и радиокнопки.</p></div><a class="outline-btn" href="?page=questionnaires">← К списку</a></header>
         <?php if (($_GET['tab'] ?? '') === 'ai' && $editQuestionnaire): ?>
@@ -2846,20 +2849,49 @@ $sections = apply_hint_config($sections, $hintConfig);
         let sections = [];
         try { sections = JSON.parse(initial.textContent || '[]'); } catch (e) { sections = []; }
         if (!sections.length) sections = [{title:'Новый раздел', questions:[]}];
-        const types = {text:'Маленькое текстовое поле', textarea:'Большое текстовое поле', select:'Выпадающий список', checklist:'Чекбокс', radio:'Радиобаттон'};
+        const types = {text:'Маленькое текстовое поле', textarea:'Большое текстовое поле', select:'Выпадающий список', checklist:'Чекбокс', radio:'Радиобаттон', yesno:'Да/Нет'};
         function slug(v){ return String(v||'question').toLowerCase().replace(/[^a-zа-я0-9]+/gi,'_').replace(/^_+|_+$/g,'') || ('q_'+Date.now()); }
         function render(){
-            root.innerHTML = sections.map((sec, si) => `<div class="answer-section builder-section"><h3><span>${si+1}</span><input class="field b-section-title" data-si="${si}" value="${escapeHtml(sec.title||'')}" placeholder="Название раздела"></h3><div>${(sec.questions||[]).map((q, qi) => `<div class="question" style="display:grid;grid-template-columns:1fr 190px 1fr auto;gap:10px;align-items:end"><div><div class="question-label">Вопрос</div><input class="field b-q-label" data-si="${si}" data-qi="${qi}" value="${escapeHtml(q.label||'')}"></div><div><div class="question-label">Тип</div><select class="field b-q-type" data-si="${si}" data-qi="${qi}">${Object.entries(types).map(([k,v])=>`<option value="${k}" ${q.type===k?'selected':''}>${v}</option>`).join('')}</select></div><div><div class="question-label">Варианты (каждый с новой строки)</div><textarea class="field b-q-options" data-si="${si}" data-qi="${qi}" rows="2">${escapeHtml((q.options||[]).join('\n'))}</textarea></div><button type="button" class="icon-button b-del-q" data-si="${si}" data-qi="${qi}">🗑</button></div>`).join('')}</div><button type="button" class="outline-btn b-add-q" data-si="${si}">+ Вопрос</button> <button type="button" class="outline-btn b-del-sec" data-si="${si}">Удалить раздел</button></div>`).join('');
+            root.innerHTML = sections.map((sec, si) => `<div class="answer-section builder-section"><h3><span>${si+1}</span><input class="field b-section-title" data-si="${si}" value="${escapeHtml(sec.title||'')}" placeholder="Название раздела"></h3><div>${(sec.questions||[]).map((q, qi) => `<div class="question" style="display:grid;grid-template-columns:1fr 190px 1fr auto;gap:10px;align-items:end"><div><div class="question-label">Вопрос</div><input class="field b-q-label" data-si="${si}" data-qi="${qi}" value="${escapeHtml(q.label||'')}"></div><div><div class="question-label">Тип</div><select class="field b-q-type" data-si="${si}" data-qi="${qi}">${Object.entries(types).map(([k,v])=>`<option value="${k}" ${q.type===k?'selected':''}>${v}</option>`).join('')}</select></div><div><div class="question-label">Варианты (каждый с новой строки)</div><textarea class="field b-q-options" data-si="${si}" data-qi="${qi}" rows="2" ${q.type==='yesno'?'disabled placeholder="Варианты Да/Нет подставляются автоматически"':''}>${escapeHtml((q.options||[]).join('\n'))}</textarea></div><button type="button" class="icon-button b-del-q" data-si="${si}" data-qi="${qi}">🗑</button></div>`).join('')}</div><button type="button" class="outline-btn b-add-q" data-si="${si}">+ Вопрос</button> <button type="button" class="outline-btn b-del-sec" data-si="${si}">Удалить раздел</button></div>`).join('');
         }
         root.addEventListener('input', ev => { const t=ev.target, si=+t.dataset.si, qi=t.dataset.qi!==undefined?+t.dataset.qi:null; if(t.classList.contains('b-section-title')) sections[si].title=t.value; if(t.classList.contains('b-q-label')) { sections[si].questions[qi].label=t.value; sections[si].questions[qi].name=slug(t.value); } if(t.classList.contains('b-q-options')) sections[si].questions[qi].options=t.value.split('\n').map(x=>x.trim()).filter(Boolean); });
-        root.addEventListener('change', ev => { const t=ev.target; if(t.classList.contains('b-q-type')) sections[+t.dataset.si].questions[+t.dataset.qi].type=t.value; });
+        root.addEventListener('change', ev => { const t=ev.target; if(t.classList.contains('b-q-type')) { const q=sections[+t.dataset.si].questions[+t.dataset.qi]; q.type=t.value; if(t.value==='yesno') q.options=[]; } });
         root.addEventListener('click', ev => { const b=ev.target.closest('button'); if(!b) return; if(b.classList.contains('b-add-q')) sections[+b.dataset.si].questions.push({name:'q_'+Date.now(), type:'text', label:'Новый вопрос', options:[]}); if(b.classList.contains('b-del-q')) sections[+b.dataset.si].questions.splice(+b.dataset.qi,1); if(b.classList.contains('b-del-sec')) sections.splice(+b.dataset.si,1); render(); });
         document.getElementById('addSectionBtn')?.addEventListener('click', () => { sections.push({title:'Новый раздел', questions:[]}); render(); });
         form.addEventListener('submit', () => { out.value = JSON.stringify(sections); });
         render();
     }
 
-    document.querySelectorAll('.copy-url-btn').forEach(button => button.addEventListener('click', async () => { try { await navigator.clipboard.writeText(button.dataset.url || ''); const original = button.innerHTML; button.innerHTML='<span aria-hidden="true">✓</span>'; setTimeout(() => { button.innerHTML = original; }, 1200); } catch(e) { prompt('Скопируйте URL анкеты', button.dataset.url || ''); } }));
+    async function copyTextToClipboard(text) {
+        if (!text) return false;
+        if (navigator.clipboard && window.isSecureContext) {
+            try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        let copied = false;
+        try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+        textarea.remove();
+        return copied;
+    }
+
+    document.querySelectorAll('.copy-url-btn').forEach(button => button.addEventListener('click', async () => {
+        const url = button.dataset.url || '';
+        const original = button.innerHTML;
+        if (await copyTextToClipboard(url)) {
+            button.innerHTML='<span aria-hidden="true">✓</span>';
+            setTimeout(() => { button.innerHTML = original; }, 1200);
+        } else {
+            prompt('Скопируйте URL анкеты', url);
+        }
+    }));
     document.querySelectorAll('.delete-questionnaire-btn').forEach(button => button.addEventListener('click', async () => {
         if(!confirm('Удалить анкету? Уже сохраненные ответы пациентов не изменятся.')) return;
         button.disabled = true;
