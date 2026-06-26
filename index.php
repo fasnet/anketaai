@@ -2643,7 +2643,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <a class="<?= $page === 'billing' ? 'is-active' : '' ?>" href="?page=billing"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M4 11h16"/><path d="M8 16h3"/></svg><span>Биллинг</span></a>
             <a class="<?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg><span>Профиль</span></a>
         </nav>
-        <div class="sidebar-bottom"><a class="profile-card <?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile">👤 <?= e($authUser['login'] ?? 'Профиль') ?></a><a class="logout-card" href="?page=logout">⎋ Выйти</a></div>
+        <div class="sidebar-bottom"><a class="logout-card" href="?page=logout">⎋ Выйти</a></div>
     </aside>
     <?php if ($page === 'profile'): ?>
     <main class="admin-main">
@@ -2658,7 +2658,7 @@ $sections = apply_hint_config($sections, $hintConfig);
     <?php list($billingFrom, $billingTo, $billingFromDateTime, $billingToDateTime) = billing_period_bounds(); $billingRows = billing_items($billingFromDateTime, $billingToDateTime); $billingTotal = array_sum(array_map(function ($row) { return (float)($row['billing_amount'] ?? 0); }, $billingRows)); ?>
     <main class="admin-main">
         <header class="admin-header responses-header">
-            <div class="admin-title"><h1>Биллинг</h1><p>Стоимость запросов к VSEGPT при анализе анкет с наценкой ×3.</p></div>
+            <div class="admin-title"><h1>Биллинг</h1></div>
         </header>
         <form class="filters-card" method="get" style="grid-template-columns:220px 220px 140px">
             <input type="hidden" name="page" value="billing">
@@ -2668,19 +2668,16 @@ $sections = apply_hint_config($sections, $hintConfig);
         </form>
         <section class="response-stats" aria-label="Сводка биллинга">
             <article class="stat-card stat-green"><span><?= icon_svg('<path d="M4 7h16v12H4z"/><path d="M4 11h16"/><path d="M8 16h3"/>') ?></span><div><strong><?= e(format_money($billingTotal)) ?></strong><p>Общая сумма по фильтру</p></div></article>
-            <article class="stat-card stat-blue"><span><?= icon_svg('<path d="M9 5h9v16H6V5h3Z"/><path d="M9 11h6M9 15h6"/>') ?></span><div><strong><?= e(count($billingRows)) ?></strong><p>Оплачиваемых анализов</p></div></article>
         </section>
         <section class="questionnaire-table responses-table" aria-label="Биллинг VSEGPT">
-            <div class="table-head" style="grid-template-columns:1.5fr 1.2fr 1fr 1fr 1fr"><div>Пациент</div><div>Анкета</div><div>Дата анализа</div><div>Стоимость VSEGPT</div><div>К оплате ×3</div></div>
+            <div class="table-head" style="grid-template-columns:1.5fr 1.2fr 1fr"><div>Пациент</div><div>Анкета</div><div>Дата анализа</div></div>
             <?php if (!$billingRows): ?><div class="empty-state">За выбранный период нет запросов VSEGPT с рассчитанной стоимостью.</div><?php endif; ?>
             <?php foreach ($billingRows as $row): ?>
                 <?php $patientName = trim(($row['patient_surname'] ?? '') . ' ' . ($row['patient_name'] ?? '') . ' ' . ($row['patient_patronymic'] ?? '')); ?>
-                <article class="table-row" style="grid-template-columns:1.5fr 1.2fr 1fr 1fr 1fr">
+                <article class="table-row" style="grid-template-columns:1.5fr 1.2fr 1fr">
                     <div class="survey-title"><a href="?page=response-view&amp;id=<?= e($row['id']) ?>"><?= e($patientName !== '' ? $patientName : 'Пациент') ?></a></div>
                     <div><?= e($row['survey'] ?? 'Анкета здоровья') ?></div>
                     <div><?= e(format_response_date($row['updated_at'] ?? $row['created_at'] ?? '')) ?></div>
-                    <div><?= e(format_money($row['vsegpt_cost'] ?? 0)) ?></div>
-                    <div><strong><?= e(format_money($row['billing_amount'] ?? 0)) ?></strong></div>
                 </article>
             <?php endforeach; ?>
         </section>
@@ -2724,7 +2721,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <div id="builderRoot"></div>
             <div class="actions" style="position:static;padding:18px 0 0"><button class="btn btn-secondary" type="button" id="addSectionBtn">+ Раздел</button><button class="btn" type="submit">Сохранить анкету</button></div>
         </form>
-        <script type="application/json" id="builderInitial"><?= e(json_encode($editSections, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) ?></script>
+        <script type="application/json" id="builderInitial"><?= json_encode($editSections, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?></script>
         <?php endif; ?>
     </main>
     <?php elseif ($page === 'ai-settings'): ?>
