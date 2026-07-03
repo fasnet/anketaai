@@ -961,7 +961,7 @@ function find_patient_response($id = null) {
 
 function sanitize_editor_html($html) {
     $html = (string)$html;
-    $allowed = '<p><br><b><strong><i><em><u><ul><ol><li><h1><h2><h3><h4><blockquote><div><span>';
+    $allowed = '<p><br><b><strong><i><em><u><ul><ol><li><h1><h2><h3><h4><h5><h6><blockquote><div><span><table><thead><tbody><tfoot><tr><td><th>';
     return trim(strip_tags($html, $allowed));
 }
 
@@ -2004,8 +2004,10 @@ function response_pdf_node_text($node) {
             continue;
         }
         $childText = response_pdf_node_text($child);
-        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], true)) {
+        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote', 'tr', 'table', 'thead', 'tbody', 'tfoot', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], true)) {
             $parts[] = "\n" . $childText . "\n";
+        } elseif (in_array($tag, ['td', 'th'], true)) {
+            $parts[] = $childText . ' ';
         } else {
             $parts[] = $childText;
         }
@@ -2058,7 +2060,7 @@ function response_pdf_dom_blocks($node) {
             $blocks = array_merge($blocks, response_pdf_list_blocks($child));
             continue;
         }
-        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote'], true)) {
+        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote', 'table', 'thead', 'tbody', 'tfoot', 'tr'], true)) {
             $text = response_pdf_node_text($child);
             if ($text !== '') $blocks[] = ['text' => $text, 'style' => 'paragraph'];
             foreach ($child->childNodes ?? [] as $nested) {
@@ -2276,7 +2278,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
-    $logo = simple_pdf_png_info(__DIR__ . '/logo11.png');
+    $logo = simple_pdf_png_info(__DIR__ . '/logo22.png') ?: simple_pdf_png_info(__DIR__ . '/logo11.png');
     $blocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     array_unshift($blocks, ['text' => (string)$title, 'style' => 'heading']);
 
@@ -2287,10 +2289,11 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         if ($logo) {
             $logoWidth = 120;
             $logoHeight = max(1, (int)round($logoWidth * ((float)$logo['height'] / max(1, (float)$logo['width']))));
-            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 40 ' . (812 - $logoHeight) . ' cm /Im1 Do Q';
+            $logoY = 812 - $logoHeight;
+            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 40 ' . $logoY . ' cm /Im1 Do Q';
         }
         $pdfLines[] = 'BT';
-        return $logo ? 742 : 800;
+        return $logo ? ($logoY - 30) : 800;
     };
     $finishPage = function () use (&$pdfLines, &$pageStreams) {
         $pdfLines[] = 'ET';
@@ -3072,7 +3075,6 @@ $sections = apply_hint_config($sections, $hintConfig);
         .hero-title{display:flex;align-items:center;gap:18px}
         .hero-logo{
             width:62px;height:62px;border-radius:50%;
-            border:2px solid var(--green-dark);
             color:var(--green-dark);
             display:grid;place-items:center;
             font-size:35px;line-height:1;
@@ -3202,7 +3204,7 @@ $sections = apply_hint_config($sections, $hintConfig);
 
         .app-shell{min-height:100vh;display:grid;grid-template-columns:320px minmax(0,1fr);background:#fbfcfb;color:#303942}
         .admin-sidebar{position:sticky;top:0;height:100vh;border-right:1px solid #e4e9e6;background:rgba(255,255,255,.92);display:flex;flex-direction:column;padding:34px 18px 32px;box-shadow:8px 0 32px rgba(42,55,50,.035)}
-        .brand{display:flex;align-items:center;gap:16px;padding:0 12px 36px}.brand-mark{width:66px;height:66px;border-radius:50%;border:1.8px solid var(--green-dark);display:grid;place-items:center;color:var(--green-dark);background:#fff}.brand-mark .logo-svg{width:40px;height:40px}.app-logo-img{width:100%;height:100%;object-fit:contain;border-radius:inherit}.brand-title{font-weight:900;color:var(--green-dark);letter-spacing:.05em;font-size:18px}.brand-subtitle{margin-top:5px;color:#64716d;font-size:12px;line-height:1.35}.admin-nav{display:grid;gap:10px}.admin-nav a{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:10px;color:#515d67;text-decoration:none;font-weight:600}.admin-nav a.is-active{background:#f2f6f4;color:var(--green-dark)}.admin-nav svg{width:23px;height:23px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}.ai-card{margin-top:auto;display:grid;grid-template-columns:46px 1fr 18px;gap:14px;align-items:center;padding:22px 18px;border:1px solid #dfe8e3;border-radius:10px;background:#fff;box-shadow:0 14px 28px rgba(31,43,39,.04);color:var(--green-dark);text-decoration:none}.ai-card strong{display:block;margin-bottom:7px}.ai-card span{color:#6b7774;line-height:1.35}.doctor-card{margin-top:120px;display:flex;align-items:center;gap:13px;padding:20px 12px;border:1px solid #dfe8e3;border-radius:10px;background:#fff}.doctor-avatar{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#e9e0d8,#b8c8c2);font-size:31px}.doctor-name{font-weight:800;color:#394349}.doctor-role{color:#75807c;font-size:13px;line-height:1.25}.doctor-card svg{margin-left:auto;width:18px;height:18px;stroke:#51615c;fill:none}
+        .brand{display:flex;align-items:center;gap:16px;padding:0 12px 36px}.brand-mark{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;color:var(--green-dark);background:#fff}.brand-mark .logo-svg{width:40px;height:40px}.app-logo-img{width:100%;height:100%;object-fit:contain;border-radius:inherit}.brand-title{font-weight:900;color:var(--green-dark);letter-spacing:.05em;font-size:18px}.brand-subtitle{margin-top:5px;color:#64716d;font-size:12px;line-height:1.35}.admin-nav{display:grid;gap:10px}.admin-nav a{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:10px;color:#515d67;text-decoration:none;font-weight:600}.admin-nav a.is-active{background:#f2f6f4;color:var(--green-dark)}.admin-nav svg{width:23px;height:23px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}.ai-card{margin-top:auto;display:grid;grid-template-columns:46px 1fr 18px;gap:14px;align-items:center;padding:22px 18px;border:1px solid #dfe8e3;border-radius:10px;background:#fff;box-shadow:0 14px 28px rgba(31,43,39,.04);color:var(--green-dark);text-decoration:none}.ai-card strong{display:block;margin-bottom:7px}.ai-card span{color:#6b7774;line-height:1.35}.doctor-card{margin-top:120px;display:flex;align-items:center;gap:13px;padding:20px 12px;border:1px solid #dfe8e3;border-radius:10px;background:#fff}.doctor-avatar{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#e9e0d8,#b8c8c2);font-size:31px}.doctor-name{font-weight:800;color:#394349}.doctor-role{color:#75807c;font-size:13px;line-height:1.25}.doctor-card svg{margin-left:auto;width:18px;height:18px;stroke:#51615c;fill:none}
         .admin-main{padding:54px 40px 34px;min-width:0}.admin-header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:36px}.admin-title h1{font-size:34px;line-height:1.1;margin:0 0 12px;color:#2e363d}.admin-title p{margin:0;color:#59636d;font-size:17px}.create-btn{display:inline-flex;align-items:center;gap:14px;padding:18px 24px;border-radius:7px;background:linear-gradient(135deg,var(--green-dark),#5b8f7f);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 12px 28px rgba(71,120,105,.2)}.create-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:2;fill:none}
         .filters-card{display:grid;grid-template-columns:minmax(260px,1.8fr) 190px 230px 190px 210px;gap:28px;align-items:end;padding:32px 22px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;margin-bottom:20px}.filter-field{position:relative}.filter-field label{position:absolute;left:12px;top:-13px;background:#fff;padding:0 7px;color:#65716d;font-size:12px}.filter-control{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#46515a;font:inherit;padding:0 14px}.search-control{padding-left:56px}.search-icon{position:absolute;left:20px;bottom:15px;color:var(--green-dark)}.reset-filter{height:48px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#4e5963;font-weight:600;font:inherit;display:flex;align-items:center;justify-content:center;gap:12px}.reset-filter svg,.search-icon{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
         .questionnaire-table{border:1px solid #dfe6e2;border-radius:10px;background:#fff;overflow:hidden}.table-head,.table-row{display:grid;grid-template-columns:2.15fr 1.18fr .92fr 1.22fr 1.22fr .86fr 1.12fr;align-items:center;column-gap:24px}.table-head{padding:0 22px;height:58px;color:#303b45;font-size:13px;font-weight:800}.table-row{min-height:122px;padding:0 22px;border-top:1px solid #e7ece9}.survey-name{display:grid;grid-template-columns:60px 1fr;gap:24px;align-items:center;min-width:0}.survey-icon{width:60px;height:60px;border-radius:9px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark)}.survey-icon .icon-svg{width:36px;height:36px}.survey-icon.purple{background:#f0eafa;color:#7455c7}.survey-icon.blue{background:#edf8ff;color:#1687d9}.survey-icon.violet{background:#f4eef8;color:#805bb7}.survey-icon.amber{background:#fff6e0;color:#b98900}.survey-icon.rose{background:#fff0f2;color:#bd5c72}.survey-icon.orange{background:#fff3e9;color:#c66f27}.survey-title{font-weight:800;color:#25303a;margin-bottom:7px;line-height:1.35}.survey-summary,.table-muted{color:#5e6974;line-height:1.55}.status-pill{display:inline-flex;align-items:center;gap:8px;border-radius:6px;padding:8px 11px;font-weight:800;font-size:13px}.status-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor}.status-active{background:#e9f4ef;color:#3b806e}.status-draft{background:#fff6df;color:#b98500}.status-archive{background:#f0f2f3;color:#77808a}.responses-count{color:var(--green-dark);font-weight:700}.actions-cell{display:flex;gap:16px;justify-content:flex-end}.icon-button{width:52px;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;display:grid;place-items:center;color:#28333c;text-decoration:none;cursor:pointer}.icon-button:disabled{cursor:not-allowed;opacity:.55}.icon-button.is-copied{border-color:var(--green-dark);background:#edf5f1;color:var(--green-dark);opacity:1}.copy-success-mark{font-size:24px;font-weight:900;line-height:1}.icon-button svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.sort-mark{color:var(--green-dark);font-size:18px;margin-left:8px}.table-footer{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px 12px;color:#66716c}.pagination{display:flex;align-items:center;gap:16px}.page-btn,.page-number{width:40px;height:40px;border:1px solid transparent;background:#fff;border-radius:8px;display:grid;place-items:center;color:#26323a;text-decoration:none}.page-btn{border-color:#dfe6e2}.page-number.is-current{border-color:var(--green-dark);color:var(--green-dark)}.per-page{display:flex;align-items:center;gap:14px}.per-page select{width:86px;height:46px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;padding:0 14px;color:#59636d}
