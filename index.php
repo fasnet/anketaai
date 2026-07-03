@@ -225,6 +225,11 @@ function money_amount_label($amount) {
     return rtrim(rtrim(number_format($amount, 2, '.', ' '), '0'), '.');
 }
 
+function money_amount_input_value($amount) {
+    $amount = (float)$amount;
+    return rtrim(rtrim(number_format($amount, 2, '.', ''), '0'), '.');
+}
+
 function current_user() {
     $id = $_SESSION['user_id'] ?? null;
     if (!$id) return null;
@@ -3324,7 +3329,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?php if (isset($_GET['saved'])): ?><div class="notice">Настройки сохранены.</div><?php endif; ?>
             <form method="post" class="profile-form">
                 <input type="hidden" name="action" value="save_settings">
-                <div class="question"><div class="question-label">Стоимость анкеты, ₽</div><input class="field" type="number" name="questionnaire_price" value="<?= e(money_amount_label($currentPrice)) ?>" min="0" step="0.01" required><p class="hint-help">Если указать 0, оплата через Prodamus не выполняется: анкета отправляется сразу.</p></div>
+                <div class="question"><div class="question-label">Стоимость анкеты, ₽</div><input class="field" type="number" name="questionnaire_price" value="<?= e(money_amount_input_value($currentPrice)) ?>" min="0" step="0.01" required><p class="hint-help">Если указать 0, оплата через Prodamus не выполняется: анкета отправляется сразу.</p></div>
                 <div class="actions" style="position:static;padding:0"><button class="btn" type="submit">Сохранить настройки</button></div>
             </form>
         </section>
