@@ -1989,30 +1989,109 @@ function response_html_to_text($html) {
     return trim($text);
 }
 
+function response_pdf_node_text($node) {
+    $parts = [];
+    foreach ($node->childNodes ?? [] as $child) {
+        if ($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE) {
+            $parts[] = $child->nodeValue;
+            continue;
+        }
+        if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+        $tag = mb_strtolower($child->nodeName, 'UTF-8');
+        if (in_array($tag, ['ul', 'ol'], true)) continue;
+        if ($tag === 'br') {
+            $parts[] = "\n";
+            continue;
+        }
+        $childText = response_pdf_node_text($child);
+        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], true)) {
+            $parts[] = "\n" . $childText . "\n";
+        } else {
+            $parts[] = $childText;
+        }
+    }
+    $text = html_entity_decode(implode('', $parts), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $text = preg_replace('/[ \t]+/u', ' ', $text);
+    $text = preg_replace('/\h*\R\h*/u', "\n", $text);
+    $text = preg_replace('/\n{3,}/u', "\n\n", $text);
+    return trim($text);
+}
+
+function response_pdf_list_blocks($listNode, $level = 0) {
+    $blocks = [];
+    $tag = mb_strtolower($listNode->nodeName, 'UTF-8');
+    $isOrdered = $tag === 'ol';
+    $number = 1;
+    foreach ($listNode->childNodes ?? [] as $item) {
+        if ($item->nodeType !== XML_ELEMENT_NODE || mb_strtolower($item->nodeName, 'UTF-8') !== 'li') continue;
+        $text = response_pdf_node_text($item);
+        if ($text !== '') {
+            $prefix = $isOrdered ? ($number . '. ') : '• ';
+            $blocks[] = ['text' => str_repeat('  ', max(0, (int)$level)) . $prefix . $text, 'style' => 'paragraph'];
+        }
+        foreach ($item->childNodes ?? [] as $child) {
+            if ($child->nodeType === XML_ELEMENT_NODE && in_array(mb_strtolower($child->nodeName, 'UTF-8'), ['ul', 'ol'], true)) {
+                $blocks = array_merge($blocks, response_pdf_list_blocks($child, $level + 1));
+            }
+        }
+        $number++;
+    }
+    return $blocks;
+}
+
+function response_pdf_dom_blocks($node) {
+    $blocks = [];
+    foreach ($node->childNodes ?? [] as $child) {
+        if ($child->nodeType === XML_TEXT_NODE || $child->nodeType === XML_CDATA_SECTION_NODE) {
+            $text = trim(preg_replace('/\s+/u', ' ', $child->nodeValue));
+            if ($text !== '') $blocks[] = ['text' => $text, 'style' => 'paragraph'];
+            continue;
+        }
+        if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+        $tag = mb_strtolower($child->nodeName, 'UTF-8');
+        if (preg_match('/^h[1-6]$/u', $tag)) {
+            $text = response_pdf_node_text($child);
+            if ($text !== '') $blocks[] = ['text' => $text, 'style' => 'heading'];
+            continue;
+        }
+        if (in_array($tag, ['ul', 'ol'], true)) {
+            $blocks = array_merge($blocks, response_pdf_list_blocks($child));
+            continue;
+        }
+        if (in_array($tag, ['p', 'div', 'section', 'article', 'blockquote'], true)) {
+            $text = response_pdf_node_text($child);
+            if ($text !== '') $blocks[] = ['text' => $text, 'style' => 'paragraph'];
+            foreach ($child->childNodes ?? [] as $nested) {
+                if ($nested->nodeType === XML_ELEMENT_NODE && in_array(mb_strtolower($nested->nodeName, 'UTF-8'), ['ul', 'ol'], true)) {
+                    $blocks = array_merge($blocks, response_pdf_list_blocks($nested));
+                }
+            }
+            continue;
+        }
+        $blocks = array_merge($blocks, response_pdf_dom_blocks($child));
+    }
+    return $blocks;
+}
+
 function response_pdf_blocks($response) {
     $aiHtml = sanitize_editor_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null));
     if (trim(strip_tags($aiHtml)) === '') {
         return [['text' => 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
     }
-    $html = preg_replace('/<\s*br\s*\/?>/iu', "\n", $aiHtml);
-    $html = preg_replace('/<\s*li\b[^>]*>/iu', '<p>• ', $html);
-    $html = preg_replace('/<\s*\/\s*li\s*>/iu', '</p>', $html);
-    $html = preg_replace('/<\s*\/\s*(ul|ol)\s*>/iu', '', $html);
-    preg_match_all('/<\s*(h[1-6]|p|div)\b[^>]*>(.*?)<\s*\/\s*\1\s*>/ius', $html, $matches, PREG_SET_ORDER);
-    $blocks = [];
-    foreach ($matches as $match) {
-        $tag = mb_strtolower($match[1], 'UTF-8');
-        $text = html_entity_decode(trim(strip_tags($match[2])), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $text = preg_replace('/[ \t]+/u', ' ', $text);
-        $text = preg_replace('/\n{3,}/u', "\n\n", $text);
-        if ($text === '') continue;
-        $blocks[] = ['text' => $text, 'style' => preg_match('/^h[1-6]$/u', $tag) ? 'heading' : 'paragraph'];
+    if (class_exists('DOMDocument')) {
+        $dom = new DOMDocument('1.0', 'UTF-8');
+        $previous = libxml_use_internal_errors(true);
+        $dom->loadHTML('<?xml encoding="UTF-8"><div id="pdf-root">' . $aiHtml . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+        $root = $dom->getElementById('pdf-root');
+        if ($root) {
+            $blocks = response_pdf_dom_blocks($root);
+            if ($blocks) return $blocks;
+        }
     }
-    if (!$blocks) {
-        $text = response_html_to_text($aiHtml);
-        $blocks[] = ['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph'];
-    }
-    return $blocks;
+    $text = response_html_to_text($aiHtml);
+    return [['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
 }
 
 function response_pdf_text($response) {
@@ -2038,6 +2117,19 @@ function simple_pdf_wrap_text($text, $fontSize, $maxWidth) {
                 $line = $word;
             } else {
                 $line = $candidate;
+            }
+            while (simple_pdf_text_width($line, $fontSize) > $maxWidth && mb_strlen($line, 'UTF-8') > 1) {
+                $chunk = '';
+                $rest = $line;
+                while ($rest !== '') {
+                    $char = mb_substr($rest, 0, 1, 'UTF-8');
+                    if ($chunk !== '' && simple_pdf_text_width($chunk . $char, $fontSize) > $maxWidth) break;
+                    $chunk .= $char;
+                    $rest = mb_substr($rest, 1, null, 'UTF-8');
+                }
+                if ($chunk === '' || $rest === '') break;
+                $lines[] = $chunk;
+                $line = $rest;
             }
         }
         if ($line !== '') $lines[] = $line;
@@ -2178,7 +2270,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
-    $logo = simple_pdf_png_info(__DIR__ . '/logo22.png');
+    $logo = simple_pdf_png_info(__DIR__ . '/logo11.png');
     $blocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     array_unshift($blocks, ['text' => (string)$title, 'style' => 'heading']);
 
@@ -2186,9 +2278,13 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $pdfLines = [];
     $startPage = function () use (&$pdfLines, $logo) {
         $pdfLines = [];
-        if ($logo) $pdfLines[] = 'q 70 0 0 70 40 742 cm /Im1 Do Q';
+        if ($logo) {
+            $logoWidth = 120;
+            $logoHeight = max(1, (int)round($logoWidth * ((float)$logo['height'] / max(1, (float)$logo['width']))));
+            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 40 ' . (812 - $logoHeight) . ' cm /Im1 Do Q';
+        }
         $pdfLines[] = 'BT';
-        return $logo ? 720 : 800;
+        return $logo ? 742 : 800;
     };
     $finishPage = function () use (&$pdfLines, &$pageStreams) {
         $pdfLines[] = 'ET';
