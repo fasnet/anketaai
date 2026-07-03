@@ -2073,12 +2073,13 @@ function response_pdf_dom_blocks($node) {
     return $blocks;
 }
 
-function response_pdf_blocks($response) {
-    $aiHtml = sanitize_editor_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null));
-    if (trim(strip_tags($aiHtml)) === '') {
+function response_pdf_blocks_from_html($html, $plainText = '') {
+    $aiHtml = sanitize_editor_html((string)$html);
+    $plainText = trim((string)$plainText);
+    if (trim(strip_tags($aiHtml)) === '' && $plainText === '') {
         return [['text' => 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
     }
-    if (class_exists('DOMDocument')) {
+    if (class_exists('DOMDocument') && trim(strip_tags($aiHtml)) !== '') {
         $dom = new DOMDocument('1.0', 'UTF-8');
         $previous = libxml_use_internal_errors(true);
         $dom->loadHTML('<?xml encoding="UTF-8"><div id="pdf-root">' . $aiHtml . '</div>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
@@ -2091,7 +2092,12 @@ function response_pdf_blocks($response) {
         }
     }
     $text = response_html_to_text($aiHtml);
+    if ($text === '') $text = $plainText;
     return [['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
+}
+
+function response_pdf_blocks($response) {
+    return response_pdf_blocks_from_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null));
 }
 
 function response_pdf_text($response) {
@@ -2527,9 +2533,9 @@ function send_response_to_rnova($response) {
   API endpoint
 */
 
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['action'] ?? '') === 'download_response_pdf')) {
+if (in_array(($_SERVER['REQUEST_METHOD'] ?? 'GET'), ['GET', 'POST'], true) && ((($_GET['action'] ?? '') === 'download_response_pdf') || (postv('action') === 'download_response_pdf'))) {
     require_auth_for_action('download_response_pdf');
-    $id = trim((string)($_GET['id'] ?? ''));
+    $id = trim((string)(($_GET['id'] ?? '') ?: postv('id')));
     $response = $id !== '' ? find_patient_response($id) : null;
     if (!$response) {
         http_response_code(404);
@@ -2537,10 +2543,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['action'] ?? '') 
         echo 'Ответ пациента не найден.';
         exit;
     }
+    $postedHtml = trim((string)postv('ai_answer_html'));
+    $postedText = trim((string)postv('ai_answer_text'));
+    $pdfBlocks = $postedHtml !== '' || $postedText !== ''
+        ? response_pdf_blocks_from_html($postedHtml !== '' ? $postedHtml : nl2br(e($postedText)), $postedText)
+        : response_pdf_blocks($response);
     $filename = 'response-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$id) . '.pdf';
     header('Content-Type: application/pdf');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
-    echo simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты');
+    echo simple_pdf_document($pdfBlocks, 'Расшифровка анкеты');
     exit;
 }
 
@@ -3983,10 +3994,42 @@ $sections = apply_hint_config($sections, $hintConfig);
             }
         }
         markProcessedBtn?.addEventListener('click', () => postResponseAction('mark_processed', markProcessedBtn, 'Отправляем в МИС...'));
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename || 'response.pdf';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        }
+        function filenameFromDisposition(disposition) {
+            const match = /filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i.exec(disposition || '');
+            return match ? decodeURIComponent(match[1] || match[2] || '') : '';
+        }
         createPdfBtn?.addEventListener('click', async (event) => {
             if (!editor || !responseId) return;
             event.preventDefault();
-            if (await saveAiAnswer()) window.location.href = createPdfBtn.href;
+            createPdfBtn.setAttribute('aria-disabled', 'true');
+            if (saveStatus) saveStatus.textContent = 'Готовим PDF с текущим текстом ИИ-ответа...';
+            const fd = new FormData();
+            fd.append('action', 'download_response_pdf');
+            fd.append('id', responseId);
+            fd.append('ai_answer_html', editor.innerHTML);
+            fd.append('ai_answer_text', editor.innerText);
+            try {
+                await saveAiAnswer();
+                const res = await fetch(createPdfBtn.href, {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+                if (!res.ok) throw new Error('Не удалось скачать PDF');
+                const blob = await res.blob();
+                downloadBlob(blob, filenameFromDisposition(res.headers.get('Content-Disposition')) || `response-${responseId}.pdf`);
+                if (saveStatus) saveStatus.textContent = 'PDF скачан с текущим текстом ИИ-ответа.';
+            } catch (err) {
+                if (saveStatus) saveStatus.textContent = err.message || 'Ошибка скачивания PDF';
+            } finally {
+                createPdfBtn.removeAttribute('aria-disabled');
+            }
         });
     }
 
