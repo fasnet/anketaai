@@ -1996,6 +1996,8 @@ function response_pdf_blocks($response) {
     }
     $html = preg_replace('/<\s*br\s*\/?>/iu', "\n", $aiHtml);
     $html = preg_replace('/<\s*li\b[^>]*>/iu', '<p>• ', $html);
+    $html = preg_replace('/<\s*\/\s*li\s*>/iu', '</p>', $html);
+    $html = preg_replace('/<\s*\/\s*(ul|ol)\s*>/iu', '', $html);
     preg_match_all('/<\s*(h[1-6]|p|div)\b[^>]*>(.*?)<\s*\/\s*\1\s*>/ius', $html, $matches, PREG_SET_ORDER);
     $blocks = [];
     foreach ($matches as $match) {
@@ -2117,6 +2119,11 @@ function simple_pdf_png_info($path) {
     if (function_exists('imagecreatefrompng')) {
         $image = @imagecreatefrompng($path);
         if ($image) {
+            if (!imageistruecolor($image)) {
+                imagepalettetotruecolor($image);
+            }
+            imagealphablending($image, false);
+            imagesavealpha($image, true);
             $width = imagesx($image);
             $height = imagesy($image);
             $rgb = '';
@@ -2175,10 +2182,20 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $blocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     array_unshift($blocks, ['text' => (string)$title, 'style' => 'heading']);
 
+    $pageStreams = [];
     $pdfLines = [];
-    if ($logo) $pdfLines[] = 'q 70 0 0 70 40 742 cm /Im1 Do Q';
-    $pdfLines[] = 'BT';
-    $y = $logo ? 720 : 800;
+    $startPage = function () use (&$pdfLines, $logo) {
+        $pdfLines = [];
+        if ($logo) $pdfLines[] = 'q 70 0 0 70 40 742 cm /Im1 Do Q';
+        $pdfLines[] = 'BT';
+        return $logo ? 720 : 800;
+    };
+    $finishPage = function () use (&$pdfLines, &$pageStreams) {
+        $pdfLines[] = 'ET';
+        $pageStreams[] = implode("\n", $pdfLines);
+    };
+
+    $y = $startPage();
     $x = 40;
     $maxWidth = 515;
     foreach ($blocks as $blockIndex => $block) {
@@ -2189,7 +2206,10 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $after = $isHeading ? 5 : 7;
         $y -= $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
-            if ($y < 42) break 2;
+            if ($y < 42) {
+                $finishPage();
+                $y = $startPage();
+            }
             $pdfLines[] = ($isHeading ? '/F2 ' : '/F1 ') . $fontSize . ' Tf';
             $pdfLines[] = '1 0 0 1 ' . $x . ' ' . $y . ' Tm';
             $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
@@ -2197,45 +2217,55 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         }
         $y -= $after;
     }
-    $pdfLines[] = 'ET';
-    $stream = implode("\n", $pdfLines);
+    $finishPage();
+
     $toUnicode = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> <0000> endbfrange endcmap CMapName currentdict /CMap defineresource pop end end";
+    $pageCount = count($pageStreams);
+    $pageIds = [];
+    $contentIds = [];
+    for ($i = 0; $i < $pageCount; $i++) {
+        $pageIds[] = 3 + ($i * 2);
+        $contentIds[] = 4 + ($i * 2);
+    }
+    $nextId = 3 + ($pageCount * 2);
+    $f1Id = $nextId++; $cidFont1Id = $nextId++; $fontDescriptor1Id = $nextId++; $toUnicodeId = $nextId++;
+    $fontFile1Id = $nextId++; $cidMap1Id = $nextId++; $imageId = $nextId++; $f2Id = $nextId++;
+    $cidFont2Id = $nextId++; $smaskId = $nextId++; $fontDescriptor2Id = $nextId++; $cidMap2Id = $nextId++; $fontFile2Id = $nextId++;
+
+    $resource = '/Resources << /Font << /F1 ' . $f1Id . ' 0 R /F2 ' . $f2Id . ' 0 R >>' . ($logo ? ' /XObject << /Im1 ' . $imageId . ' 0 R >>' : '') . ' >>';
     $objects = [
-        '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
-        '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
-        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 12 0 R >>' . ($logo ? ' /XObject << /Im1 11 0 R >>' : '') . ' >> /Contents 8 0 R >> endobj',
-        '4 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [5 0 R] /ToUnicode 7 0 R >> endobj',
-        '5 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 6 0 R /CIDToGIDMap 10 0 R /DW 600 >> endobj',
-        '6 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 9 0 R >> endobj',
-        '7 0 obj << /Length ' . strlen($toUnicode) . ' >> stream' . "\n" . $toUnicode . "\nendstream endobj",
-        '8 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj",
-        '9 0 obj << /Length ' . strlen($fontData) . ' /Length1 ' . strlen($fontData) . ' >> stream' . "\n" . $fontData . "\nendstream endobj",
-        '10 0 obj << /Length ' . strlen($cidToGidMap) . ' >> stream' . "\n" . $cidToGidMap . "\nendstream endobj",
+        1 => '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+        2 => '2 0 obj << /Type /Pages /Kids [' . implode(' ', array_map(fn($id) => $id . ' 0 R', $pageIds)) . '] /Count ' . $pageCount . ' >> endobj',
     ];
-    if ($logo) {
-        $smaskRef = !empty($logo['smask']) ? ' /SMask 14 0 R' : '';
-        $objects[] = '11 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef . ' /Length ' . strlen($logo['data']) . ' >> stream' . "\n" . $logo['data'] . "\nendstream endobj";
-    } else {
-        $objects[] = '11 0 obj << >> endobj';
+    foreach ($pageStreams as $i => $stream) {
+        $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ' . $resource . ' /Contents ' . $contentIds[$i] . ' 0 R >> endobj';
+        $objects[$contentIds[$i]] = $contentIds[$i] . ' 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj";
     }
-    $objects[] = '12 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans-Bold /Encoding /Identity-H /DescendantFonts [13 0 R] /ToUnicode 7 0 R >> endobj';
-    $objects[] = '13 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans-Bold /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 15 0 R /CIDToGIDMap 16 0 R /DW 600 >> endobj';
-    if ($logo && !empty($logo['smask'])) {
-        $objects[] = '14 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ' . strlen($logo['smask']) . ' >> stream' . "\n" . $logo['smask'] . "\nendstream endobj";
-    } else {
-        $objects[] = '14 0 obj << >> endobj';
-    }
-    $objects[] = '15 0 obj << /Type /FontDescriptor /FontName /DejaVuSans-Bold /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 17 0 R >> endobj';
-    $objects[] = '16 0 obj << /Length ' . strlen($boldCidToGidMap) . ' >> stream' . "\n" . $boldCidToGidMap . "\nendstream endobj";
-    $objects[] = '17 0 obj << /Length ' . strlen($boldFontData) . ' /Length1 ' . strlen($boldFontData) . ' >> stream' . "\n" . $boldFontData . "\nendstream endobj";
+    $objects[$f1Id] = $f1Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [' . $cidFont1Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
+    $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
+    $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
+    $objects[$toUnicodeId] = $toUnicodeId . ' 0 obj << /Length ' . strlen($toUnicode) . ' >> stream' . "\n" . $toUnicode . "\nendstream endobj";
+    $objects[$fontFile1Id] = $fontFile1Id . ' 0 obj << /Length ' . strlen($fontData) . ' /Length1 ' . strlen($fontData) . ' >> stream' . "\n" . $fontData . "\nendstream endobj";
+    $objects[$cidMap1Id] = $cidMap1Id . ' 0 obj << /Length ' . strlen($cidToGidMap) . ' >> stream' . "\n" . $cidToGidMap . "\nendstream endobj";
+    $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
+    $objects[$imageId] = $logo ? ($imageId . ' 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef . ' /Length ' . strlen($logo['data']) . ' >> stream' . "\n" . $logo['data'] . "\nendstream endobj") : ($imageId . ' 0 obj << >> endobj');
+    $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans-Bold /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
+    $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans-Bold /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
+    $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? ($smaskId . ' 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ' . strlen($logo['smask']) . ' >> stream' . "\n" . $logo['smask'] . "\nendstream endobj") : ($smaskId . ' 0 obj << >> endobj');
+    $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans-Bold /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
+    $objects[$cidMap2Id] = $cidMap2Id . ' 0 obj << /Length ' . strlen($boldCidToGidMap) . ' >> stream' . "\n" . $boldCidToGidMap . "\nendstream endobj";
+    $objects[$fontFile2Id] = $fontFile2Id . ' 0 obj << /Length ' . strlen($boldFontData) . ' /Length1 ' . strlen($boldFontData) . ' >> stream' . "\n" . $boldFontData . "\nendstream endobj";
+
+    ksort($objects);
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
     $offsets = [0];
-    foreach ($objects as $object) { $offsets[] = strlen($pdf); $pdf .= $object . "\n"; }
+    foreach ($objects as $id => $object) { $offsets[$id] = strlen($pdf); $pdf .= $object . "\n"; }
     $xref = strlen($pdf);
-    $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
-    for ($i = 1; $i <= count($objects); $i++) $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
-    return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+    $pdf .= "xref\n0 " . (max(array_keys($objects)) + 1) . "\n0000000000 65535 f \n";
+    for ($i = 1; $i <= max(array_keys($objects)); $i++) $pdf .= isset($offsets[$i]) ? sprintf("%010d 00000 n \n", $offsets[$i]) : "0000000000 65535 f \n";
+    return $pdf . "trailer << /Size " . (max(array_keys($objects)) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
 }
+
 function rnova_config($key, $fallback) {
     $value = getenv($key);
     if ($value === false || trim((string)$value) === '') {
