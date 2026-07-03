@@ -1989,10 +1989,58 @@ function response_html_to_text($html) {
     return trim($text);
 }
 
-function response_pdf_text($response) {
+function response_pdf_blocks($response) {
     $aiHtml = sanitize_editor_html($response['ai_answer_html'] ?? ai_analysis_to_html($response['analysis'] ?? null));
-    $aiText = response_html_to_text($aiHtml);
-    return $aiText !== '' ? $aiText : 'ИИ-анализ пока не сформирован.';
+    if (trim(strip_tags($aiHtml)) === '') {
+        return [['text' => 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
+    }
+    $html = preg_replace('/<\s*br\s*\/?>/iu', "\n", $aiHtml);
+    $html = preg_replace('/<\s*li\b[^>]*>/iu', '<p>• ', $html);
+    preg_match_all('/<\s*(h[1-6]|p|div)\b[^>]*>(.*?)<\s*\/\s*\1\s*>/ius', $html, $matches, PREG_SET_ORDER);
+    $blocks = [];
+    foreach ($matches as $match) {
+        $tag = mb_strtolower($match[1], 'UTF-8');
+        $text = html_entity_decode(trim(strip_tags($match[2])), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/[ \t]+/u', ' ', $text);
+        $text = preg_replace('/\n{3,}/u', "\n\n", $text);
+        if ($text === '') continue;
+        $blocks[] = ['text' => $text, 'style' => preg_match('/^h[1-6]$/u', $tag) ? 'heading' : 'paragraph'];
+    }
+    if (!$blocks) {
+        $text = response_html_to_text($aiHtml);
+        $blocks[] = ['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph'];
+    }
+    return $blocks;
+}
+
+function response_pdf_text($response) {
+    $blocks = response_pdf_blocks($response);
+    return trim(implode("\n\n", array_map(fn($block) => $block['text'], $blocks)));
+}
+
+function simple_pdf_text_width($text, $fontSize) {
+    $wide = preg_match_all('/[^\x00-\x7F]/u', (string)$text);
+    $chars = mb_strlen((string)$text, 'UTF-8');
+    return ($chars - $wide) * $fontSize * 0.52 + $wide * $fontSize * 0.62;
+}
+
+function simple_pdf_wrap_text($text, $fontSize, $maxWidth) {
+    $lines = [];
+    foreach (preg_split('/\R/u', (string)$text) ?: [''] as $paragraph) {
+        $words = preg_split('/\s+/u', trim($paragraph), -1, PREG_SPLIT_NO_EMPTY);
+        $line = '';
+        foreach ($words as $word) {
+            $candidate = $line === '' ? $word : $line . ' ' . $word;
+            if ($line !== '' && simple_pdf_text_width($candidate, $fontSize) > $maxWidth) {
+                $lines[] = $line;
+                $line = $word;
+            } else {
+                $line = $candidate;
+            }
+        }
+        if ($line !== '') $lines[] = $line;
+    }
+    return $lines ?: [''];
 }
 
 function simple_pdf_u16($data, $offset) {
@@ -2066,6 +2114,24 @@ function simple_pdf_hex_text($text) {
 
 function simple_pdf_png_info($path) {
     if (!is_readable($path)) return null;
+    if (function_exists('imagecreatefrompng')) {
+        $image = @imagecreatefrompng($path);
+        if ($image) {
+            $width = imagesx($image);
+            $height = imagesy($image);
+            $rgb = '';
+            $alpha = '';
+            for ($y = 0; $y < $height; $y++) {
+                for ($x = 0; $x < $width; $x++) {
+                    $color = imagecolorat($image, $x, $y);
+                    $rgb .= chr(($color >> 16) & 0xFF) . chr(($color >> 8) & 0xFF) . chr($color & 0xFF);
+                    $alpha .= chr((int)round((127 - (($color >> 24) & 0x7F)) * 255 / 127));
+                }
+            }
+            imagedestroy($image);
+            return ['width' => $width, 'height' => $height, 'colorspace' => '/DeviceRGB', 'colors' => 3, 'bits' => 8, 'data' => gzcompress($rgb), 'smask' => gzcompress($alpha)];
+        }
+    }
     $data = file_get_contents($path);
     if (substr($data, 0, 8) !== "\x89PNG\r\n\x1a\n") return null;
     $width = simple_pdf_u32($data, 16);
@@ -2095,25 +2161,41 @@ function simple_pdf_png_info($path) {
     } else {
         return null;
     }
-    return ['width' => $width, 'height' => $height, 'colorspace' => $colorspace, 'colors' => $colors, 'bits' => $bitDepth, 'data' => $idat];
+    return ['width' => $width, 'height' => $height, 'colorspace' => $colorspace, 'colors' => $colors, 'bits' => $bitDepth, 'data' => $idat, 'smask' => ''];
 }
 
-function simple_pdf_document($text, $title = 'Расшифровка анкеты') {
+function simple_pdf_document($content, $title = 'Расшифровка анкеты') {
     $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
     $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
+    $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
+    $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
     $logo = simple_pdf_png_info(__DIR__ . '/logo22.png');
-    $lines = preg_split('/\R/u', (string)$text) ?: [];
-    array_unshift($lines, (string)$title, '');
+    $blocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
+    array_unshift($blocks, ['text' => (string)$title, 'style' => 'heading']);
+
     $pdfLines = [];
     if ($logo) $pdfLines[] = 'q 70 0 0 70 40 742 cm /Im1 Do Q';
     $pdfLines[] = 'BT';
-    $pdfLines[] = '/F1 10 Tf';
-    $pdfLines[] = '40 ' . ($logo ? '720' : '800') . ' Td';
-    foreach (array_slice($lines, 0, 180) as $line) {
-        $line = mb_substr($line, 0, 95, 'UTF-8');
-        $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
-        $pdfLines[] = '0 -14 Td';
+    $y = $logo ? 720 : 800;
+    $x = 40;
+    $maxWidth = 515;
+    foreach ($blocks as $blockIndex => $block) {
+        $isHeading = ($block['style'] ?? '') === 'heading';
+        $fontSize = $isHeading ? 12 : 10;
+        $leading = $isHeading ? 16 : 14;
+        $before = $blockIndex === 0 ? 0 : ($isHeading ? 10 : 5);
+        $after = $isHeading ? 5 : 7;
+        $y -= $before;
+        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
+            if ($y < 42) break 2;
+            $pdfLines[] = ($isHeading ? '/F2 ' : '/F1 ') . $fontSize . ' Tf';
+            $pdfLines[] = '1 0 0 1 ' . $x . ' ' . $y . ' Tm';
+            $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
+            $y -= $leading;
+        }
+        $y -= $after;
     }
     $pdfLines[] = 'ET';
     $stream = implode("\n", $pdfLines);
@@ -2121,7 +2203,7 @@ function simple_pdf_document($text, $title = 'Расшифровка анкет�
     $objects = [
         '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
         '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
-        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >>' . ($logo ? ' /XObject << /Im1 11 0 R >>' : '') . ' >> /Contents 8 0 R >> endobj',
+        '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 12 0 R >>' . ($logo ? ' /XObject << /Im1 11 0 R >>' : '') . ' >> /Contents 8 0 R >> endobj',
         '4 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [5 0 R] /ToUnicode 7 0 R >> endobj',
         '5 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 6 0 R /CIDToGIDMap 10 0 R /DW 600 >> endobj',
         '6 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 9 0 R >> endobj',
@@ -2131,22 +2213,29 @@ function simple_pdf_document($text, $title = 'Расшифровка анкет�
         '10 0 obj << /Length ' . strlen($cidToGidMap) . ' >> stream' . "\n" . $cidToGidMap . "\nendstream endobj",
     ];
     if ($logo) {
-        $objects[] = '11 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors ' . (int)$logo['colors'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Columns ' . (int)$logo['width'] . ' >> /Length ' . strlen($logo['data']) . ' >> stream' . "\n" . $logo['data'] . "\nendstream endobj";
+        $smaskRef = !empty($logo['smask']) ? ' /SMask 14 0 R' : '';
+        $objects[] = '11 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef . ' /Length ' . strlen($logo['data']) . ' >> stream' . "\n" . $logo['data'] . "\nendstream endobj";
+    } else {
+        $objects[] = '11 0 obj << >> endobj';
     }
+    $objects[] = '12 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans-Bold /Encoding /Identity-H /DescendantFonts [13 0 R] /ToUnicode 7 0 R >> endobj';
+    $objects[] = '13 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans-Bold /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 15 0 R /CIDToGIDMap 16 0 R /DW 600 >> endobj';
+    if ($logo && !empty($logo['smask'])) {
+        $objects[] = '14 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ' . strlen($logo['smask']) . ' >> stream' . "\n" . $logo['smask'] . "\nendstream endobj";
+    } else {
+        $objects[] = '14 0 obj << >> endobj';
+    }
+    $objects[] = '15 0 obj << /Type /FontDescriptor /FontName /DejaVuSans-Bold /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 17 0 R >> endobj';
+    $objects[] = '16 0 obj << /Length ' . strlen($boldCidToGidMap) . ' >> stream' . "\n" . $boldCidToGidMap . "\nendstream endobj";
+    $objects[] = '17 0 obj << /Length ' . strlen($boldFontData) . ' /Length1 ' . strlen($boldFontData) . ' >> stream' . "\n" . $boldFontData . "\nendstream endobj";
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
     $offsets = [0];
-    foreach ($objects as $object) {
-        $offsets[] = strlen($pdf);
-        $pdf .= $object . "\n";
-    }
+    foreach ($objects as $object) { $offsets[] = strlen($pdf); $pdf .= $object . "\n"; }
     $xref = strlen($pdf);
     $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
-    for ($i = 1; $i <= count($objects); $i++) {
-        $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
-    }
+    for ($i = 1; $i <= count($objects); $i++) $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
     return $pdf . "trailer << /Size " . (count($objects) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
 }
-
 function rnova_config($key, $fallback) {
     $value = getenv($key);
     if ($value === false || trim((string)$value) === '') {
@@ -2287,7 +2376,6 @@ function send_response_to_rnova($response) {
     }
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
-    $description = response_pdf_text($response);
     $responseUrl = app_base_url() . '?page=response-view&id=' . rawurlencode((string)($response['id'] ?? ''));
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
     $task = rnova_request('POST', 'createTask', [
@@ -2303,7 +2391,7 @@ function send_response_to_rnova($response) {
         'patient_id' => $patientId,
         'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
         'type' => 'pdf',
-        'content' => base64_encode(simple_pdf_document($description, 'Расшифровка анкеты')),
+        'content' => base64_encode(simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты')),
     ]);
     if (!$file['ok']) return $file;
     return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'file' => $file['data']];
@@ -2326,7 +2414,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && (($_GET['action'] ?? '') 
     $filename = 'response-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$id) . '.pdf';
     header('Content-Type: application/pdf');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
-    echo simple_pdf_document(response_pdf_text($response), 'Расшифровка анкеты');
+    echo simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты');
     exit;
 }
 
