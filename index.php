@@ -27,7 +27,7 @@ const PRODAMUS_SECRET_KEY = 'secretKey';
 const PRODAMUS_FORM_URL = 'https://adaptogenzzclinic.payform.ru/';
 const PRODAMUS_SHOP_ID = 'adaptogenzzclinic';
 const PRODAMUS_PRODUCT_NAME = 'Анкета здоровья';
-const PRODAMUS_PRODUCT_PRICE = 3000;
+const PRODAMUS_PRODUCT_PRICE = 3000; // fallback default; editable in admin settings
 const PRODAMUS_PRODUCT_QUANTITY = 1;
 
 /*
@@ -187,6 +187,11 @@ function db_init(PDO $pdo) {
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key VARCHAR(191) NOT NULL PRIMARY KEY,
+        setting_value TEXT NULL,
+        updated_at DATETIME NOT NULL
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
 
     db_ensure_columns($pdo, 'app_users', [
         'full_name' => 'VARCHAR(255) NULL',
@@ -196,6 +201,29 @@ function db_init(PDO $pdo) {
     $done = true;
 }
 
+
+
+function app_setting($key, $default = '') {
+    $stmt = db()->prepare('SELECT setting_value FROM app_settings WHERE setting_key=? LIMIT 1');
+    $stmt->execute([(string)$key]);
+    $value = $stmt->fetchColumn();
+    return $value === false ? $default : (string)$value;
+}
+
+function save_app_setting($key, $value) {
+    $stmt = db()->prepare('INSERT INTO app_settings (setting_key, setting_value, updated_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_at=VALUES(updated_at)');
+    return $stmt->execute([(string)$key, (string)$value, date('Y-m-d H:i:s')]);
+}
+
+function questionnaire_price() {
+    $price = (float)str_replace(',', '.', app_setting('questionnaire_price', (string)PRODAMUS_PRODUCT_PRICE));
+    return max(0.0, $price);
+}
+
+function money_amount_label($amount) {
+    $amount = (float)$amount;
+    return rtrim(rtrim(number_format($amount, 2, '.', ' '), '0'), '.');
+}
 
 function current_user() {
     $id = $_SESSION['user_id'] ?? null;
@@ -564,10 +592,12 @@ function prodamus_signature($data, $secretKey) {
 }
 
 function is_payment_required() {
-    return strtoupper(trim((string)PAYMENT_REQUIRED)) === 'Y';
+    return strtoupper(trim((string)PAYMENT_REQUIRED)) === 'Y' && questionnaire_price() > 0;
 }
 
 function prodamus_payment_url($orderId, $patient) {
+    $price = questionnaire_price();
+    if ($price <= 0) return '';
     $baseUrl = app_base_url();
     $data = [
         'order_id' => (string)$orderId,
@@ -578,11 +608,11 @@ function prodamus_payment_url($orderId, $patient) {
         'urlReturn' => $baseUrl . '?page=form&payment=error',
         'urlSuccess' => $baseUrl . '?page=form&payment=success',
         'currency' => 'rub',
-        'order_sum' => (string)(PRODAMUS_PRODUCT_PRICE * PRODAMUS_PRODUCT_QUANTITY),
+        'order_sum' => (string)($price * PRODAMUS_PRODUCT_QUANTITY),
         'products' => [
             [
                 'name' => PRODAMUS_PRODUCT_NAME,
-                'price' => (string)PRODAMUS_PRODUCT_PRICE,
+                'price' => (string)$price,
                 'quantity' => (string)PRODAMUS_PRODUCT_QUANTITY,
             ],
         ],
@@ -2572,6 +2602,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'log
     exit;
 }
 
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'save_settings') {
+    $rawPrice = str_replace(',', '.', trim((string)postv('questionnaire_price', '0')));
+    $price = is_numeric($rawPrice) ? max(0, (float)$rawPrice) : 0;
+    save_app_setting('questionnaire_price', (string)$price);
+    header('Location: ?page=settings&saved=1');
+    exit;
+}
+
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && postv('action') === 'update_profile') {
     $user = current_user();
     if (!$user) redirect_to_login();
@@ -3243,6 +3281,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <a class="<?= ($page === 'questionnaires' || $page === 'questionnaire-edit') ? 'is-active' : '' ?>" href="?page=questionnaires"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg><span>Анкеты</span></a>
             <a class="<?= ($page === 'responses' || $page === 'response-view') ? 'is-active' : '' ?>" href="?page=responses"><svg viewBox="0 0 24 24"><path d="M4 5h14v14H4z"/><path d="M8 9h6M8 13h4M18 12l2 2 3-5"/></svg><span>Ответы пациентов</span></a>
             <a class="<?= $page === 'billing' ? 'is-active' : '' ?>" href="?page=billing"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M4 11h16"/><path d="M8 16h3"/></svg><span>Биллинг</span></a>
+            <a class="<?= $page === 'settings' ? 'is-active' : '' ?>" href="?page=settings"><svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6.9h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg><span>Настройки</span></a>
             <a class="<?= ($page === 'users' || $page === 'user-edit') ? 'is-active' : '' ?>" href="?page=users"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-8 0v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M22 21v-2a3 3 0 0 0-2-2.8"/></svg><span>Пользователи</span></a>
             <a class="<?= $page === 'profile' ? 'is-active' : '' ?>" href="?page=profile"><svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/></svg><span>Профиль</span></a>
         </nav>
@@ -3277,6 +3316,20 @@ $sections = apply_hint_config($sections, $hintConfig);
         <?php if (isset($_GET['error'])): ?><div class="notice notice-error" style="margin-bottom:18px">Не удалось сохранить пользователя. Email должен быть уникальным, пароль обязателен для нового пользователя.</div><?php endif; ?>
         <section class="view-card profile-form"><form method="post" class="profile-form"><input type="hidden" name="action" value="save_user"><input type="hidden" name="id" value="<?= e($editUser['id'] ?? 0) ?>"><div class="question"><div class="question-label">ФИО</div><input class="field" name="full_name" value="<?= e($editUser['full_name'] ?? '') ?>" required></div><div class="question"><div class="question-label">Email</div><input class="field" type="email" name="email" value="<?= e($editUser['email'] ?? $editUser['login'] ?? '') ?>" required></div><div class="question"><div class="question-label">Пароль</div><input class="field" type="password" name="password" autocomplete="new-password" <?= $editUser ? 'placeholder="Оставьте пустым, чтобы не менять"' : 'required' ?>></div><div class="actions" style="position:static;padding:0"><button class="btn" type="submit">Сохранить</button></div></form></section>
     </main>
+    <?php elseif ($page === 'settings'): ?>
+    <?php $currentPrice = questionnaire_price(); ?>
+    <main class="admin-main">
+        <header class="admin-header responses-header"><div class="admin-title"><h1>Настройки</h1><p>Управляйте стоимостью анкеты для оплаты через Prodamus.</p></div></header>
+        <section class="view-card profile-form">
+            <?php if (isset($_GET['saved'])): ?><div class="notice">Настройки сохранены.</div><?php endif; ?>
+            <form method="post" class="profile-form">
+                <input type="hidden" name="action" value="save_settings">
+                <div class="question"><div class="question-label">Стоимость анкеты, ₽</div><input class="field" type="number" name="questionnaire_price" value="<?= e(money_amount_label($currentPrice)) ?>" min="0" step="0.01" required><p class="hint-help">Если указать 0, оплата через Prodamus не выполняется: анкета отправляется сразу.</p></div>
+                <div class="actions" style="position:static;padding:0"><button class="btn" type="submit">Сохранить настройки</button></div>
+            </form>
+        </section>
+    </main>
+
     <?php elseif ($page === 'profile'): ?>
 
     <main class="admin-main">
@@ -3466,7 +3519,7 @@ $sections = apply_hint_config($sections, $hintConfig);
 <?php else: ?>
 
 <div class="wrap">
-    <?php $initialPaymentUrl = prodamus_payment_url('anketa-' . date('YmdHis'), []); ?>
+    <?php $questionnairePrice = questionnaire_price(); $initialPaymentUrl = prodamus_payment_url('anketa-' . date('YmdHis'), []); ?>
     <div class="hero">
         <div class="hero-title">
             <div class="hero-logo" aria-hidden="true"><?= hero_logo_svg() ?></div>
@@ -3479,7 +3532,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         </div>
     </div>
 
-    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>"><input type="hidden" name="questionnaire_id" value="<?= e($currentQuestionnaire['id'] ?? '') ?>">
+    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>" data-payment-price="<?= e(money_amount_label($questionnairePrice)) ?>"><input type="hidden" name="questionnaire_id" value="<?= e($currentQuestionnaire['id'] ?? '') ?>">
         <input type="hidden" name="action" value="analyze">
         <input type="hidden" name="filled_at" value="<?= e(date('Y-m-d')) ?>">
 
@@ -3551,7 +3604,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 <span class="progress-text" id="progressText">Заполнено: 0 из 19 разделов</span>
                 <span class="progress-track"><span class="progress-fill" id="progressFill"></span></span>
             </div>
-            <button type="submit" class="btn" id="submitBtn">ОТПРАВИТЬ АНКЕТУ</button>
+            <button type="submit" class="btn" id="submitBtn"><?= is_payment_required() ? 'Оплатить и отправить' : 'Отправить' ?></button>
         </div>
     </form>
 
@@ -3894,7 +3947,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     title: 'Для анализа анкеты необходимо ее оплатить',
                     text: 'Нажмите кнопку ниже, чтобы открыть защищенную страницу оплаты Prodamus. После успешной оплаты анкета автоматически отправится на анализ ИИ.',
                     paymentUrl,
-                    paymentButtonText: 'Перейти к оплате 3000 ₽'
+                    paymentButtonText: `Перейти к оплате ${form.dataset.paymentPrice || ''} ₽`.replace('  ₽', ' ₽')
                 });
                 return;
             }
@@ -3923,7 +3976,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 if (result) result.innerHTML = `<div class="error">${escapeHtml(err.message || 'Не удалось отправить анкету.')}</div>`;
             } finally {
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'ОТПРАВИТЬ АНКЕТУ';
+                submitBtn.textContent = paymentRequired ? 'Оплатить и отправить' : 'Отправить';
             }
         });
     }
