@@ -18,7 +18,6 @@ const RNOVA_API_URL = 'https://app.rnova.org/api/public/';
 const RNOVA_API_TOKEN = ''; // fallback; prefer RNOVA_API_TOKEN environment variable
 const RNOVA_ADMIN_ROLE_ID = 12460;
 const RNOVA_EMPLOYEE_ID = 50256;
-const PAYMENT_REQUIRED = 'Y';
 
 /*
   Настройки оплаты Prodamus
@@ -597,21 +596,23 @@ function prodamus_signature($data, $secretKey) {
 }
 
 function is_payment_required() {
-    return strtoupper(trim((string)PAYMENT_REQUIRED)) === 'Y' && questionnaire_price() > 0;
+    return questionnaire_price() > 0;
 }
 
 function prodamus_payment_url($orderId, $patient) {
     $price = questionnaire_price();
     if ($price <= 0) return '';
     $baseUrl = app_base_url();
+    $questionnaireId = trim((string)($patient['questionnaire_id'] ?? ($_POST['questionnaire_id'] ?? ($_GET['qid'] ?? ''))));
+    $formUrl = $baseUrl . '?page=form' . ($questionnaireId !== '' ? '&qid=' . rawurlencode($questionnaireId) : '');
     $data = [
         'order_id' => (string)$orderId,
         'customer_phone' => trim((string)($patient['phone'] ?? '')),
         'customer_email' => trim((string)($patient['email'] ?? '')),
         'customer_extra' => 'Оплата анализа анкеты здоровья',
         'do' => 'pay',
-        'urlReturn' => $baseUrl . '?page=form&payment=error',
-        'urlSuccess' => $baseUrl . '?page=form&payment=success',
+        'urlReturn' => $formUrl . '&payment=error',
+        'urlSuccess' => $formUrl . '&payment=success',
         'currency' => 'rub',
         'order_sum' => (string)($price * PRODAMUS_PRODUCT_QUANTITY),
         'products' => [
@@ -3524,7 +3525,7 @@ $sections = apply_hint_config($sections, $hintConfig);
 <?php else: ?>
 
 <div class="wrap">
-    <?php $questionnairePrice = questionnaire_price(); $initialPaymentUrl = prodamus_payment_url('anketa-' . date('YmdHis'), []); ?>
+    <?php $questionnairePrice = questionnaire_price(); $paymentRequired = is_payment_required(); $submitButtonText = $paymentRequired ? 'Оплатить и отправить' : 'Отправить'; $initialPaymentUrl = prodamus_payment_url('anketa-' . date('YmdHis'), ['questionnaire_id' => $currentQuestionnaire['id'] ?? '']); ?>
     <div class="hero">
         <div class="hero-title">
             <div class="hero-logo" aria-hidden="true"><?= hero_logo_svg() ?></div>
@@ -3537,7 +3538,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         </div>
     </div>
 
-    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= is_payment_required() ? 'Y' : 'N' ?>" data-payment-price="<?= e(money_amount_label($questionnairePrice)) ?>"><input type="hidden" name="questionnaire_id" value="<?= e($currentQuestionnaire['id'] ?? '') ?>">
+    <form id="quizForm" data-payment-url="<?= e($initialPaymentUrl) ?>" data-payment-required="<?= $paymentRequired ? 'Y' : 'N' ?>" data-payment-price="<?= e(money_amount_label($questionnairePrice)) ?>"><input type="hidden" name="questionnaire_id" value="<?= e($currentQuestionnaire['id'] ?? '') ?>">
         <input type="hidden" name="action" value="analyze">
         <input type="hidden" name="filled_at" value="<?= e(date('Y-m-d')) ?>">
 
@@ -3609,7 +3610,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 <span class="progress-text" id="progressText">Заполнено: 0 из 19 разделов</span>
                 <span class="progress-track"><span class="progress-fill" id="progressFill"></span></span>
             </div>
-            <button type="submit" class="btn" id="submitBtn"><?= is_payment_required() ? 'Оплатить и отправить' : 'Отправить' ?></button>
+            <button type="submit" class="btn" id="submitBtn"><?= e($submitButtonText) ?></button>
         </div>
     </form>
 
@@ -3972,7 +3973,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
                 openSuccessModal({
                     title: 'Анкета успешно отправлена',
-                    text: 'Оплата отключена для тестирования, анкета отправлена на анализ ИИ.'
+                    text: 'Анкета отправлена. Оплата не требуется, потому что стоимость анкеты в настройках равна 0.'
                 });
                 if (result) result.innerHTML = `<div class="success">${escapeHtml(data.message || 'Анкета успешно отправлена.')}</div>`;
                 form.reset();
