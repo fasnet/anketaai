@@ -2422,7 +2422,7 @@ function rnova_response_id($data) {
     if (!is_array($data)) {
         return null;
     }
-    foreach (['patient_id', 'id'] as $key) {
+    foreach (['patient_id', 'task_id', 'file_id', 'id'] as $key) {
         if (isset($data[$key]) && (is_numeric($data[$key]) || trim((string)$data[$key]) !== '')) {
             return $data[$key];
         }
@@ -2528,7 +2528,7 @@ function rnova_patient_payload($patient) {
     ]);
 }
 
-function send_response_to_rnova($response) {
+function rnova_ensure_patient($response) {
     $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
     $phone = trim((string)($patient['phone'] ?? ''));
     $email = trim((string)($patient['email'] ?? ''));
@@ -2547,6 +2547,16 @@ function send_response_to_rnova($response) {
     }
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
+    return ['ok' => true, 'patient_id' => $patientId];
+}
+
+function create_rnova_task_for_response($response) {
+    if (trim((string)($response['mis_task_id'] ?? '')) !== '') {
+        return ['ok' => true, 'patient_id' => $response['mis_patient_id'] ?? null, 'task' => $response['mis_task'] ?? null, 'task_id' => $response['mis_task_id'], 'skipped' => true];
+    }
+    $patientResult = rnova_ensure_patient($response);
+    if (!$patientResult['ok']) return $patientResult;
+    $patientId = $patientResult['patient_id'];
     $responseUrl = app_base_url() . '?page=response-view&id=' . rawurlencode((string)($response['id'] ?? ''));
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
     $task = rnova_request('POST', 'createTask', [
@@ -2558,14 +2568,50 @@ function send_response_to_rnova($response) {
         'due_date' => rnova_date($due),
     ]);
     if (!$task['ok']) return $task;
-    $file = rnova_request('POST', 'uploadFile', [
+    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'task_id' => rnova_response_id($task['data'] ?? [])];
+}
+
+function attach_response_pdf_to_rnova_task($response) {
+    $patientResult = rnova_ensure_patient($response);
+    if (!$patientResult['ok']) return $patientResult;
+    $patientId = $response['mis_patient_id'] ?? $patientResult['patient_id'];
+    $taskId = trim((string)($response['mis_task_id'] ?? ''));
+    $file = rnova_request('POST', 'uploadFile', rnova_filter_payload([
         'patient_id' => $patientId,
+        'task_id' => $taskId,
         'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
         'type' => 'pdf',
         'content' => base64_encode(simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты')),
-    ]);
+    ]));
     if (!$file['ok']) return $file;
-    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'file' => $file['data']];
+    return ['ok' => true, 'patient_id' => $patientId, 'task_id' => $taskId, 'file' => $file['data']];
+}
+
+function send_response_to_rnova($response) {
+    $task = create_rnova_task_for_response($response);
+    if (!$task['ok']) return $task;
+    $response['mis_patient_id'] = $task['patient_id'] ?? ($response['mis_patient_id'] ?? null);
+    $response['mis_task_id'] = $task['task_id'] ?? ($response['mis_task_id'] ?? null);
+    $file = attach_response_pdf_to_rnova_task($response);
+    if (!$file['ok']) return $file;
+    return $task + ['file' => $file['file'] ?? null];
+}
+
+function queue_rnova_task_for_response_id($responseId) {
+    $response = $responseId ? find_patient_response($responseId) : null;
+    if (!$response) return ['ok' => false, 'error' => 'Ответ пациента не найден.'];
+    $task = create_rnova_task_for_response($response);
+    if ($task['ok'] && empty($task['skipped'])) {
+        update_patient_response($responseId, function ($item) use ($task) {
+            $item['mis_sent_at'] = date('c');
+            $item['mis_patient_id'] = $task['patient_id'] ?? null;
+            $item['mis_task_id'] = $task['task_id'] ?? null;
+            $item['mis_task'] = $task['task'] ?? null;
+            $item['history'][] = ['date' => date('c'), 'event' => 'В RNOVA создана активная задача без PDF'];
+            return $item;
+        });
+    }
+    return $task;
 }
 
 /*
@@ -2770,11 +2816,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
             $item['ai_answer_html'] = $response['ai_answer_html'] ?? $item['ai_answer_html'];
             $item['mis_sent_at'] = date('c');
             $item['mis_patient_id'] = $sent['patient_id'] ?? null;
-            $item['history'][] = ['date' => date('c'), 'event' => 'Анкета отмечена как обработанная и отправлена в МИС RNOVA'];
+            $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
+            $item['mis_task'] = $sent['task'] ?? ($item['mis_task'] ?? null);
+            $item['mis_file'] = $sent['file'] ?? null;
+            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к активной задаче RNOVA, задача не закрывалась'];
             return $item;
         });
     }
-    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана и отправлена в МИС.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана, PDF прикреплён к активной задаче RNOVA.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -2795,7 +2844,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'se
         update_patient_response($response['id'], function ($item) use ($sent, $response) {
             $item['mis_sent_at'] = date('c');
             $item['mis_patient_id'] = $sent['patient_id'] ?? null;
-            $item['history'][] = ['date' => date('c'), 'event' => 'Ответ отправлен в МИС RNOVA'];
+            $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
+            $item['mis_task'] = $sent['task'] ?? ($item['mis_task'] ?? null);
+            $item['mis_file'] = $sent['file'] ?? null;
+            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к активной задаче RNOVA'];
             return $item;
         });
     }
@@ -2836,9 +2888,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
     $draftRecord = build_response_record($sections, $patient, $readableAnswers, $hints);
     if (!response_has_medical_answers($readableAnswers)) {
         $responseId = add_patient_response($draftRecord);
+        $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно сохранён без отправки в ИИ: заполнен только блок общей информации.' : 'Не удалось сохранить ответ в базе данных.',
+            'rnova_task' => $rnovaTask,
             'warning' => 'VSEGPT не вызывался, потому что медицинские блоки анкеты пустые.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -2911,9 +2965,11 @@ $userPayload = [
 
     if (!$api['ok']) {
         $responseId = add_patient_response($draftRecord);
+        $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
+            'rnova_task' => $rnovaTask,
             'warning' => $api['error'],
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -2925,9 +2981,11 @@ $userPayload = [
     $decoded = json_decode($api['raw'], true);
     if (!is_array($decoded)) {
         $responseId = add_patient_response($draftRecord);
+        $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
+            'rnova_task' => $rnovaTask,
             'warning' => 'VSEGPT вернул невалидный JSON.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -2948,9 +3006,11 @@ $userPayload = [
     $record['vsegpt_usage_json'] = json_encode($decoded['usage'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
     $record['history'][] = ['date' => date('c'), 'event' => 'Сгенерировано ИИ'];
     $responseId = add_patient_response($record);
+    $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
 
     echo json_encode([
         'ok' => (bool)$responseId,
+        'rnova_task' => $rnovaTask,
         'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
         'response_id' => $responseId,
         'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
