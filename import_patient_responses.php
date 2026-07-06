@@ -127,6 +127,9 @@ function db_init(PDO $pdo): void
         ai_answer_html LONGTEXT NULL,
         mis_sent_at VARCHAR(64) NULL,
         mis_patient_id VARCHAR(64) NULL,
+        mis_task_id VARCHAR(64) NULL,
+        mis_task_json LONGTEXT NULL,
+        mis_file_json LONGTEXT NULL,
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL,
         INDEX questionnaire_id_idx (questionnaire_id),
@@ -137,6 +140,9 @@ function db_init(PDO $pdo): void
         'ai_answer_html' => 'LONGTEXT NULL',
         'mis_sent_at' => 'VARCHAR(64) NULL',
         'mis_patient_id' => 'VARCHAR(64) NULL',
+        'mis_task_id' => 'VARCHAR(64) NULL',
+        'mis_task_json' => 'LONGTEXT NULL',
+        'mis_file_json' => 'LONGTEXT NULL',
     ]);
     $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_sections (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -352,14 +358,14 @@ function upsert_patient_response(array $record, string $questionnaireId): void
     }
     $aiAnswerHtml = (string)($record['ai_answer_html'] ?? '<p>ИИ-анализ пока не сформирован.</p>');
 
-    $stmt = $pdo->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, mis_sent_at, mis_patient_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), updated_at=VALUES(updated_at)');
+    $stmt = $pdo->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, mis_sent_at, mis_patient_id, mis_task_id, mis_task_json, mis_file_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), mis_task_id=VALUES(mis_task_id), mis_task_json=VALUES(mis_task_json), mis_file_json=VALUES(mis_file_json), updated_at=VALUES(updated_at)');
     $stmt->execute([
         (string)$record['id'], $questionnaireId, $record['survey'] ?? DEFAULT_QUESTIONNAIRE_TITLE, $record['category'] ?? null,
         $record['status'] ?? 'completed', (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0),
         $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '',
         $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '',
-        (string)$analysisRaw, $aiAnswerHtml, $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null,
+        (string)$analysisRaw, $aiAnswerHtml, $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, $record['mis_task_id'] ?? null, json_encode($record['mis_task'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), json_encode($record['mis_file'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null),
     ]);
 

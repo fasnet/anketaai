@@ -131,6 +131,9 @@ function db_init(PDO $pdo) {
         ai_answer_html LONGTEXT NULL,
         mis_sent_at VARCHAR(64) NULL,
         mis_patient_id VARCHAR(64) NULL,
+        mis_task_id VARCHAR(64) NULL,
+        mis_task_json LONGTEXT NULL,
+        mis_file_json LONGTEXT NULL,
         created_at DATETIME NOT NULL,
         updated_at DATETIME NOT NULL,
         INDEX questionnaire_id_idx (questionnaire_id),
@@ -145,7 +148,7 @@ function db_init(PDO $pdo) {
         'patient_dob' => 'VARCHAR(32) NULL', 'patient_phone' => 'VARCHAR(64) NULL', 'patient_email' => 'VARCHAR(255) NULL',
         'patient_sex' => 'VARCHAR(32) NULL', 'patient_height' => 'VARCHAR(32) NULL', 'patient_weight' => 'VARCHAR(32) NULL',
         'patient_waist' => 'VARCHAR(32) NULL', 'patient_filled_at' => 'VARCHAR(32) NULL', 'analysis_raw' => 'LONGTEXT NULL',
-        'ai_answer_html' => 'LONGTEXT NULL', 'vsegpt_cost' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'billing_amount' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'vsegpt_usage_json' => 'LONGTEXT NULL', 'mis_sent_at' => 'VARCHAR(64) NULL', 'mis_patient_id' => 'VARCHAR(64) NULL'
+        'ai_answer_html' => 'LONGTEXT NULL', 'vsegpt_cost' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'billing_amount' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'vsegpt_usage_json' => 'LONGTEXT NULL', 'mis_sent_at' => 'VARCHAR(64) NULL', 'mis_patient_id' => 'VARCHAR(64) NULL', 'mis_task_id' => 'VARCHAR(64) NULL', 'mis_task_json' => 'LONGTEXT NULL', 'mis_file_json' => 'LONGTEXT NULL'
     ]);
     $pdo->exec("CREATE TABLE IF NOT EXISTS patient_response_sections (
         id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -515,7 +518,7 @@ function response_from_row($row) {
         'status' => $row['status'] ?? 'draft', 'progress' => (int)($row['progress'] ?? 0), 'filled_answers' => (int)($row['filled_answers'] ?? 0), 'total_answers' => (int)($row['total_answers'] ?? 0),
         'created_at' => $row['created_at'] ?? '', 'updated_at' => $row['updated_at'] ?? '', 'answers' => $sections,
         'hints' => array_map('strval', $hstmt->fetchAll(PDO::FETCH_COLUMN)), 'analysis' => null, 'analysis_raw' => $row['analysis_raw'] ?? '',
-        'ai_answer_html' => $row['ai_answer_html'] ?: '<p>ИИ-анализ пока не сформирован.</p>', 'vsegpt_cost' => (float)($row['vsegpt_cost'] ?? 0), 'billing_amount' => (float)($row['billing_amount'] ?? 0), 'vsegpt_usage_json' => $row['vsegpt_usage_json'] ?? '', 'mis_sent_at' => $row['mis_sent_at'] ?? null, 'mis_patient_id' => $row['mis_patient_id'] ?? null, 'history' => $history,
+        'ai_answer_html' => $row['ai_answer_html'] ?: '<p>ИИ-анализ пока не сформирован.</p>', 'vsegpt_cost' => (float)($row['vsegpt_cost'] ?? 0), 'billing_amount' => (float)($row['billing_amount'] ?? 0), 'vsegpt_usage_json' => $row['vsegpt_usage_json'] ?? '', 'mis_sent_at' => $row['mis_sent_at'] ?? null, 'mis_patient_id' => $row['mis_patient_id'] ?? null, 'mis_task_id' => $row['mis_task_id'] ?? null, 'mis_task' => json_decode((string)($row['mis_task_json'] ?? ''), true) ?: null, 'mis_file' => json_decode((string)($row['mis_file_json'] ?? ''), true) ?: null, 'history' => $history,
     ];
 }
 
@@ -533,9 +536,9 @@ function save_patient_responses($data) {
 }
 
 function upsert_patient_response($record) {
-    $stmt = db()->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, vsegpt_cost, billing_amount, vsegpt_usage_json, mis_sent_at, mis_patient_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), vsegpt_cost=VALUES(vsegpt_cost), billing_amount=VALUES(billing_amount), vsegpt_usage_json=VALUES(vsegpt_usage_json), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), updated_at=VALUES(updated_at)');
+    $stmt = db()->prepare('INSERT INTO patient_responses (id, questionnaire_id, survey, category, status, progress, filled_answers, total_answers, patient_surname, patient_name, patient_patronymic, patient_dob, patient_phone, patient_email, patient_sex, patient_height, patient_weight, patient_waist, patient_filled_at, analysis_raw, ai_answer_html, vsegpt_cost, billing_amount, vsegpt_usage_json, mis_sent_at, mis_patient_id, mis_task_id, mis_task_json, mis_file_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE questionnaire_id=VALUES(questionnaire_id), survey=VALUES(survey), category=VALUES(category), status=VALUES(status), progress=VALUES(progress), filled_answers=VALUES(filled_answers), total_answers=VALUES(total_answers), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), patient_dob=VALUES(patient_dob), patient_phone=VALUES(patient_phone), patient_email=VALUES(patient_email), patient_sex=VALUES(patient_sex), patient_height=VALUES(patient_height), patient_weight=VALUES(patient_weight), patient_waist=VALUES(patient_waist), patient_filled_at=VALUES(patient_filled_at), analysis_raw=VALUES(analysis_raw), ai_answer_html=VALUES(ai_answer_html), vsegpt_cost=VALUES(vsegpt_cost), billing_amount=VALUES(billing_amount), vsegpt_usage_json=VALUES(vsegpt_usage_json), mis_sent_at=VALUES(mis_sent_at), mis_patient_id=VALUES(mis_patient_id), mis_task_id=VALUES(mis_task_id), mis_task_json=VALUES(mis_task_json), mis_file_json=VALUES(mis_file_json), updated_at=VALUES(updated_at)');
     $patient = is_array($record['patient'] ?? null) ? $record['patient'] : [];
-    $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', (float)($record['vsegpt_cost'] ?? 0), (float)($record['billing_amount'] ?? 0), $record['vsegpt_usage_json'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
+    $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', (float)($record['vsegpt_cost'] ?? 0), (float)($record['billing_amount'] ?? 0), $record['vsegpt_usage_json'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, $record['mis_task_id'] ?? null, json_encode($record['mis_task'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), json_encode($record['mis_file'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
     if (!$ok) return false;
     $id = (string)$record['id'];
     db()->prepare('DELETE FROM patient_response_hints WHERE response_id=?')->execute([$id]);
@@ -2576,6 +2579,9 @@ function attach_response_pdf_to_rnova_task($response) {
     if (!$patientResult['ok']) return $patientResult;
     $patientId = $response['mis_patient_id'] ?? $patientResult['patient_id'];
     $taskId = trim((string)($response['mis_task_id'] ?? ''));
+    if ($taskId === '') {
+        return ['ok' => false, 'error' => 'Для прикрепления PDF не найден ID текущей задачи RNOVA. Сначала создайте активную задачу.'];
+    }
     $file = rnova_request('POST', 'uploadFile', rnova_filter_payload([
         'patient_id' => $patientId,
         'task_id' => $taskId,
@@ -2809,7 +2815,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
     if ($postedHtml !== '') {
         $response['ai_answer_html'] = sanitize_editor_html($postedHtml);
     }
-    $sent = send_response_to_rnova($response);
+    $sent = attach_response_pdf_to_rnova_task($response);
     if ($sent['ok']) {
         update_patient_response($response['id'], function ($item) use ($sent, $response) {
             $item['status'] = 'processed';
@@ -2817,13 +2823,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
             $item['mis_sent_at'] = date('c');
             $item['mis_patient_id'] = $sent['patient_id'] ?? null;
             $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
-            $item['mis_task'] = $sent['task'] ?? ($item['mis_task'] ?? null);
             $item['mis_file'] = $sent['file'] ?? null;
             $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к активной задаче RNOVA, задача не закрывалась'];
             return $item;
         });
     }
-    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана, PDF прикреплён к активной задаче RNOVA.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана, PDF прикреплён к текущей задаче RNOVA.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
