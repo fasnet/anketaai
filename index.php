@@ -828,12 +828,6 @@ function ai_analysis_to_html($analysis) {
     }
 
     $html = '';
-    if (!empty($analysis['summary'])) {
-        $html .= '<h3>Общий вывод</h3><p>'.e($analysis['summary']).'</p>';
-    }
-    if (!empty($analysis['priority'])) {
-        $html .= '<h3>Приоритет</h3><p>'.e($analysis['priority']).'</p>';
-    }
     $lists = [
         'likely_issues' => 'Ключевые наблюдения',
         'recommended_tests' => 'Рекомендуемые анализы и обследования',
@@ -2114,6 +2108,38 @@ function response_pdf_dom_blocks($node) {
     return $blocks;
 }
 
+function response_pdf_filter_ai_blocks($blocks) {
+    $filtered = [];
+    $skipNextParagraph = false;
+    foreach ($blocks as $block) {
+        $style = $block['style'] ?? '';
+        $text = trim((string)($block['text'] ?? ''));
+        $normalized = mb_strtolower($text, 'UTF-8');
+        if ($style === 'heading' && in_array($normalized, ['общий вывод', 'общий вывод тест', 'приоритет'], true)) {
+            $skipNextParagraph = true;
+            continue;
+        }
+        if ($skipNextParagraph && $style === 'paragraph') {
+            $skipNextParagraph = false;
+            continue;
+        }
+        $skipNextParagraph = false;
+        $filtered[] = $block;
+    }
+    return $filtered;
+}
+
+function response_pdf_patient_name($response) {
+    $patient = is_array($response) ? ($response['patient'] ?? []) : [];
+    $parts = [
+        trim((string)($patient['surname'] ?? '')),
+        trim((string)($patient['name'] ?? '')),
+        trim((string)($patient['patronymic'] ?? '')),
+    ];
+    $name = trim(implode(' ', array_filter($parts, fn($part) => $part !== '')));
+    return $name !== '' ? $name : '________________________';
+}
+
 function response_pdf_blocks_from_html($html, $plainText = '') {
     $aiHtml = sanitize_editor_html((string)$html);
     $plainText = trim((string)$plainText);
@@ -2129,12 +2155,12 @@ function response_pdf_blocks_from_html($html, $plainText = '') {
         $root = $dom->getElementById('pdf-root');
         if ($root) {
             $blocks = response_pdf_dom_blocks($root);
-            if ($blocks) return $blocks;
+            if ($blocks) return response_pdf_filter_ai_blocks($blocks);
         }
     }
     $text = response_html_to_text($aiHtml);
     if ($text === '') $text = $plainText;
-    return [['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']];
+    return response_pdf_filter_ai_blocks([['text' => $text !== '' ? $text : 'ИИ-анализ пока не сформирован.', 'style' => 'paragraph']]);
 }
 
 function response_pdf_blocks($response) {
@@ -2310,7 +2336,7 @@ function simple_pdf_png_info($path) {
     return ['width' => $width, 'height' => $height, 'colorspace' => $colorspace, 'colors' => $colors, 'bits' => $bitDepth, 'data' => $idat, 'smask' => ''];
 }
 
-function simple_pdf_document($content, $title = 'Расшифровка анкеты') {
+function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '') {
     $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
     $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
     $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
@@ -2318,21 +2344,43 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
     $logo = simple_pdf_png_info(__DIR__ . '/logo22.png') ?: simple_pdf_png_info(__DIR__ . '/logo11.png');
-    $blocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
-    array_unshift($blocks, ['text' => (string)$title, 'style' => 'heading']);
+    $aiBlocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
+    $patientName = trim((string)$patientName);
+    if ($patientName === '') $patientName = '________________________';
+    $blocks = array_merge([
+        ['text' => 'Уважаемый(ая) ' . $patientName . '!', 'style' => 'greeting'],
+        ['text' => 'Благодарим вас за заполнение анкеты. На основе предоставленных вами сведений мы подготовили информационный обзор лабораторных и инструментальных методов исследования, которые могут быть актуальны при ваших симптомах и особенностях здоровья.', 'style' => 'paragraph'],
+        ['text' => 'Настоящий обзор не является медицинским заключением, диагнозом или назначением.', 'style' => 'paragraph'],
+        ['text' => 'Ниже приведён перечень анализов и диагностических процедур, о которых врачи часто упоминают в подобных ситуациях.', 'style' => 'paragraph'],
+    ], $aiBlocks, [
+        ['text' => 'Важно!', 'style' => 'heading'],
+        ['text' => 'Перечень составлен как справочный материал на основании ваших ответов.', 'style' => 'paragraph'],
+        ['text' => 'После того как вы получите результаты анализов (в любой лаборатории), вы можете записаться на приём к терапевту в нашу клинику для интерпретации данных и получения медицинских рекомендаций.', 'style' => 'paragraph'],
+        ['text' => 'В сети наших клиник действует специальное предложение: скидка 10% на приём врача-терапевта или врача общей практики, если все исследования были проведены в наших клиниках', 'style' => 'paragraph'],
+        ['text' => 'С уважением,', 'style' => 'paragraph_spaced'],
+        ['text' => 'Команда специалистов Adaptogenzz', 'style' => 'paragraph'],
+    ]);
 
     $pageStreams = [];
     $pdfLines = [];
     $startPage = function () use (&$pdfLines, $logo) {
         $pdfLines = [];
         if ($logo) {
-            $logoWidth = 120;
+            $logoWidth = 96;
             $logoHeight = max(1, (int)round($logoWidth * ((float)$logo['height'] / max(1, (float)$logo['width']))));
-            $logoY = 812 - $logoHeight;
-            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 40 ' . $logoY . ' cm /Im1 Do Q';
+            $logoY = 800 - $logoHeight;
+            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 95 ' . $logoY . ' cm /Im1 Do Q';
         }
         $pdfLines[] = 'BT';
-        return $logo ? ($logoY - 30) : 800;
+        $contactLines = ['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'];
+        $contactY = 792;
+        foreach ($contactLines as $line) {
+            $pdfLines[] = '/F2 10 Tf';
+            $pdfLines[] = '1 0 0 1 375 ' . $contactY . ' Tm';
+            $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
+            $contactY -= 14;
+        }
+        return 660;
     };
     $finishPage = function () use (&$pdfLines, &$pageStreams) {
         $pdfLines[] = 'ET';
@@ -2343,11 +2391,13 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $x = 40;
     $maxWidth = 515;
     foreach ($blocks as $blockIndex => $block) {
-        $isHeading = ($block['style'] ?? '') === 'heading';
-        $fontSize = $isHeading ? 12 : 10;
-        $leading = $isHeading ? 16 : 14;
-        $before = $blockIndex === 0 ? 0 : ($isHeading ? 10 : 5);
-        $after = $isHeading ? 5 : 7;
+        $style = $block['style'] ?? '';
+        $isHeading = $style === 'heading';
+        $isGreeting = $style === 'greeting';
+        $fontSize = 10;
+        $leading = $isHeading || $isGreeting ? 16 : 14;
+        $before = $blockIndex === 0 ? 0 : ($isHeading ? 46 : ($style === 'paragraph_spaced' ? 34 : 5));
+        $after = $isHeading ? 5 : ($isGreeting ? 38 : 7);
         $y -= $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
             if ($y < 42) {
@@ -2355,7 +2405,8 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
                 $y = $startPage();
             }
             $pdfLines[] = ($isHeading ? '/F2 ' : '/F1 ') . $fontSize . ' Tf';
-            $pdfLines[] = '1 0 0 1 ' . $x . ' ' . $y . ' Tm';
+            $lineX = $isGreeting ? max(40, (int)round((595 - simple_pdf_text_width($line, $fontSize)) / 2)) : $x;
+            $pdfLines[] = '1 0 0 1 ' . $lineX . ' ' . $y . ' Tm';
             $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
             $y -= $leading;
         }
@@ -2587,7 +2638,7 @@ function attach_response_pdf_to_rnova_task($response) {
         'task_id' => $taskId,
         'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
         'type' => 'pdf',
-        'content' => base64_encode(simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты')),
+        'content' => base64_encode(simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты', response_pdf_patient_name($response))),
     ]));
     if (!$file['ok']) return $file;
     return ['ok' => true, 'patient_id' => $patientId, 'task_id' => $taskId, 'file' => $file['data']];
@@ -2642,7 +2693,7 @@ if (in_array(($_SERVER['REQUEST_METHOD'] ?? 'GET'), ['GET', 'POST'], true) && ((
     $filename = 'response-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', (string)$id) . '.pdf';
     header('Content-Type: application/pdf');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
-    echo simple_pdf_document($pdfBlocks, 'Расшифровка анкеты');
+    echo simple_pdf_document($pdfBlocks, 'Расшифровка анкеты', response_pdf_patient_name($response));
     exit;
 }
 
