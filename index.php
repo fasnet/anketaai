@@ -2412,8 +2412,8 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $fontSize = 10;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
-        $before = $blockIndex === 0 ? 0 : ($isHeading ? 46 : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
-        $after = $isHeading ? 5 : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
+        $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
+        $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y -= $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
             if ($y < 42) {
