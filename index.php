@@ -2357,19 +2357,19 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Prefer Liberation Sans for generated PDFs because Adobe Acrobat can fail
-    // to extract some packaged NotoSans-Bold.ttf builds. Liberation Sans has
-    // Cyrillic glyphs and embeds reliably in Acrobat; keep Noto as a fallback
-    // for servers where Liberation fonts are unavailable.
+    // Prefer DejaVu Sans for generated PDFs: Acrobat reliably extracts the
+    // embedded DejaVu TrueType programs and the font contains Cyrillic glyphs.
+    // Keep Liberation/Noto only as fallbacks for servers without DejaVu.
     $fontCandidates = [
+        ['DejaVuSans', 'DejaVuSans-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
         ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
         ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
     ];
-    $fontBaseName = 'LiberationSans';
-    $boldFontBaseName = 'LiberationSans-Bold';
-    $fontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf';
-    $boldFontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf';
+    $fontBaseName = 'DejaVuSans';
+    $boldFontBaseName = 'DejaVuSans-Bold';
+    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
     foreach ($fontCandidates as [$regularName, $boldName, $regularPath, $boldPath]) {
         if (!is_readable($regularPath)) continue;
         $fontBaseName = $regularName;
