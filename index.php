@@ -2357,18 +2357,19 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Use Noto as the primary family for generated PDFs: Noto Sans first,
-    // then Noto Serif. Avoid DejaVu fonts in PDFs because embedded DejaVu faces
-    // can render inconsistently in Acrobat.
+    // Prefer Liberation Sans for generated PDFs because Adobe Acrobat can fail
+    // to extract some packaged NotoSans-Bold.ttf builds. Liberation Sans has
+    // Cyrillic glyphs and embeds reliably in Acrobat; keep Noto as a fallback
+    // for servers where Liberation fonts are unavailable.
     $fontCandidates = [
+        ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
         ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
-        ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
     ];
-    $fontBaseName = 'NotoSans';
-    $boldFontBaseName = 'NotoSans-Bold';
-    $fontPath = '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf';
-    $boldFontPath = '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf';
+    $fontBaseName = 'LiberationSans';
+    $boldFontBaseName = 'LiberationSans-Bold';
+    $fontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf';
     foreach ($fontCandidates as [$regularName, $boldName, $regularPath, $boldPath]) {
         if (!is_readable($regularPath)) continue;
         $fontBaseName = $regularName;
@@ -2487,7 +2488,11 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $fontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
     $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $fontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
     $objects[$toUnicodeId] = simple_pdf_stream_object($toUnicodeId, '', $toUnicode);
-    $objects[$fontFile1Id] = simple_pdf_stream_object($fontFile1Id, '/Length1 ' . strlen($fontData), $fontData, true);
+    // Store font programs uncompressed. Acrobat is stricter than browser PDF
+    // viewers when extracting embedded TrueType fonts, and leaving FontFile2 as
+    // a plain stream avoids false "cannot extract embedded font" errors while
+    // preserving searchable/selectable Cyrillic text via the Type0 font mapping.
+    $objects[$fontFile1Id] = simple_pdf_stream_object($fontFile1Id, '/Length1 ' . strlen($fontData), $fontData, false);
     $objects[$cidMap1Id] = simple_pdf_stream_object($cidMap1Id, '', $cidToGidMap, true);
     $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
     $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
@@ -2496,7 +2501,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? simple_pdf_stream_object($smaskId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', $logo['smask']) : ($smaskId . ' 0 obj << >> endobj');
     $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $boldFontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
     $objects[$cidMap2Id] = simple_pdf_stream_object($cidMap2Id, '', $boldCidToGidMap, true);
-    $objects[$fontFile2Id] = simple_pdf_stream_object($fontFile2Id, '/Length1 ' . strlen($boldFontData), $boldFontData, true);
+    $objects[$fontFile2Id] = simple_pdf_stream_object($fontFile2Id, '/Length1 ' . strlen($boldFontData), $boldFontData, false);
 
     ksort($objects);
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
