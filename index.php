@@ -2383,19 +2383,19 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
                 imagealphablending($logo, true);
                 $logoWidth = 96;
                 $logoHeight = max(1, (int)round($logoWidth * (imagesy($logo) / max(1, imagesx($logo)))));
-                imagecopyresampled($image, $logo, 95 * $scale, (800 - $logoHeight) * $scale, 0, 0, $logoWidth * $scale, $logoHeight * $scale, imagesx($logo), imagesy($logo));
+                imagecopyresampled($image, $logo, 95 * $scale, 42 * $scale, 0, 0, $logoWidth * $scale, $logoHeight * $scale, imagesx($logo), imagesy($logo));
                 imagedestroy($logo);
             }
         }
         if ($showHeader) {
-            $contactY = 792;
+            $contactY = 54;
             foreach (['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'] as $line) {
-                simple_pdf_draw_ttf_text($image, $boldFontPath, 10, 375, $contactY, $line, $scale);
-                $contactY -= 14;
+                simple_pdf_draw_ttf_text($image, $boldFontPath, 14, 375, $contactY, $line, $scale);
+                $contactY += 20;
             }
         }
         $pages[] = $image;
-        return $showHeader ? 660 : 800;
+        return $showHeader ? 180 : 42;
     };
 
     $logoPath = is_readable($logoPath) ? $logoPath : '';
@@ -2406,19 +2406,19 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 10;
+        $fontSize = 14;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
+        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
-        $y -= $before;
+        $y += $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
-            if ($y < 42) $y = $newPage(false);
+            if ($y > $pageHeight - 42) $y = $newPage(false);
             $lineX = $isGreeting ? max(40, (int)round(($pageWidth - simple_pdf_text_width($line, $fontSize)) / 2)) : $x;
             simple_pdf_draw_ttf_text($pages[count($pages) - 1], $isHeading ? $boldFontPath : $fontPath, $fontSize, $lineX, $y, $line, $scale);
-            $y -= $leading;
+            $y += $leading;
         }
-        $y -= $after;
+        $y += $after;
     }
 
     $pageCount = count($pages);
@@ -2460,11 +2460,12 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Prefer Liberation/Noto fonts for generated PDFs. Acrobat can fail to
-    // extract embedded DejaVuSans-Bold on some Windows installations, replacing
-    // Cyrillic text with dotted placeholders. DejaVu stays as a last-resort
-    // fallback for servers where the preferred Cyrillic-capable fonts are absent.
+    // Prefer the bundled Liberation Sans font for generated PDFs so Cyrillic
+    // text does not depend on fonts installed on the server. System fonts remain
+    // as fallbacks for deployments where the bundled file is missing.
+    $bundledLiberationSans = __DIR__ . '/LiberationSans-Regular.ttf';
     $fontCandidates = [
+        ['LiberationSans', 'LiberationSans', $bundledLiberationSans, $bundledLiberationSans],
         ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
         ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
@@ -2528,10 +2529,10 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $contactLines = ['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'];
             $contactY = 792;
             foreach ($contactLines as $line) {
-                $pdfLines[] = '/F2 10 Tf';
+                $pdfLines[] = '/F2 14 Tf';
                 $pdfLines[] = '1 0 0 1 375 ' . $contactY . ' Tm';
                 $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
-                $contactY -= 14;
+                $contactY -= 20;
             }
             return 660;
         }
@@ -2549,9 +2550,9 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 10;
+        $fontSize = 14;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
+        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y -= $before;
