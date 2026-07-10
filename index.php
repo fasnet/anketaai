@@ -2365,7 +2365,9 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
         ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
         ['DejaVuSerif', 'DejaVuSerif-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'],
-        ['DejaVuSans', 'DejaVuSans-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
+        // Keep DejaVuSans as a regular-only fallback because Acrobat can be
+        // sensitive to some embedded DejaVu bold faces.
+        ['DejaVuSans', 'DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
     ];
     $fontBaseName = 'DejaVuSans';
     $boldFontBaseName = 'DejaVuSans';
