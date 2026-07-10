@@ -2279,6 +2279,19 @@ function simple_pdf_hex_text($text) {
     return strtoupper(bin2hex(mb_convert_encoding((string)$text, 'UTF-16BE', 'UTF-8')));
 }
 
+function simple_pdf_stream_object($id, $dict, $data, $compress = false) {
+    $streamData = (string)$data;
+    $dict = trim((string)$dict);
+    if ($compress && $streamData !== '') {
+        $compressed = gzcompress($streamData);
+        if ($compressed !== false) {
+            $streamData = $compressed;
+            $dict .= ' /Filter /FlateDecode';
+        }
+    }
+    return $id . ' 0 obj << ' . $dict . ' /Length ' . strlen($streamData) . ' >> stream' . "\n" . $streamData . "\nendstream endobj";
+}
+
 function simple_pdf_png_info($path) {
     if (!is_readable($path)) return null;
     if (function_exists('imagecreatefrompng')) {
@@ -2450,22 +2463,22 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     ];
     foreach ($pageStreams as $i => $stream) {
         $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ' . $resource . ' /Contents ' . $contentIds[$i] . ' 0 R >> endobj';
-        $objects[$contentIds[$i]] = $contentIds[$i] . ' 0 obj << /Length ' . strlen($stream) . ' >> stream' . "\n" . $stream . "\nendstream endobj";
+        $objects[$contentIds[$i]] = simple_pdf_stream_object($contentIds[$i], '', $stream);
     }
     $objects[$f1Id] = $f1Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [' . $cidFont1Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
     $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
     $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
-    $objects[$toUnicodeId] = $toUnicodeId . ' 0 obj << /Length ' . strlen($toUnicode) . ' >> stream' . "\n" . $toUnicode . "\nendstream endobj";
-    $objects[$fontFile1Id] = $fontFile1Id . ' 0 obj << /Length ' . strlen($fontData) . ' /Length1 ' . strlen($fontData) . ' >> stream' . "\n" . $fontData . "\nendstream endobj";
-    $objects[$cidMap1Id] = $cidMap1Id . ' 0 obj << /Length ' . strlen($cidToGidMap) . ' >> stream' . "\n" . $cidToGidMap . "\nendstream endobj";
+    $objects[$toUnicodeId] = simple_pdf_stream_object($toUnicodeId, '', $toUnicode);
+    $objects[$fontFile1Id] = simple_pdf_stream_object($fontFile1Id, '/Length1 ' . strlen($fontData), $fontData, true);
+    $objects[$cidMap1Id] = simple_pdf_stream_object($cidMap1Id, '', $cidToGidMap, true);
     $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
-    $objects[$imageId] = $logo ? ($imageId . ' 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef . ' /Length ' . strlen($logo['data']) . ' >> stream' . "\n" . $logo['data'] . "\nendstream endobj") : ($imageId . ' 0 obj << >> endobj');
+    $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
     $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans-Bold /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
     $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans-Bold /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
-    $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? ($smaskId . ' 0 obj << /Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ' . strlen($logo['smask']) . ' >> stream' . "\n" . $logo['smask'] . "\nendstream endobj") : ($smaskId . ' 0 obj << >> endobj');
+    $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? simple_pdf_stream_object($smaskId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', $logo['smask']) : ($smaskId . ' 0 obj << >> endobj');
     $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans-Bold /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
-    $objects[$cidMap2Id] = $cidMap2Id . ' 0 obj << /Length ' . strlen($boldCidToGidMap) . ' >> stream' . "\n" . $boldCidToGidMap . "\nendstream endobj";
-    $objects[$fontFile2Id] = $fontFile2Id . ' 0 obj << /Length ' . strlen($boldFontData) . ' /Length1 ' . strlen($boldFontData) . ' >> stream' . "\n" . $boldFontData . "\nendstream endobj";
+    $objects[$cidMap2Id] = simple_pdf_stream_object($cidMap2Id, '', $boldCidToGidMap, true);
+    $objects[$fontFile2Id] = simple_pdf_stream_object($fontFile2Id, '/Length1 ' . strlen($boldFontData), $boldFontData, true);
 
     ksort($objects);
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
