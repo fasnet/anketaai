@@ -2357,8 +2357,21 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+    // Adobe Acrobat can fail to extract the embedded DejaVuSans-Bold font on some systems.
+    // Use the DejaVu Serif family for generated PDFs; it supports Cyrillic and is available
+    // in the same default Linux font package, while avoiding the problematic Sans Bold face.
+    $fontBaseName = 'DejaVuSerif';
+    $boldFontBaseName = 'DejaVuSerif-Bold';
+    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf';
+    if (!is_readable($fontPath)) {
+        $fontBaseName = 'DejaVuSans';
+        $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    }
+    if (!is_readable($boldFontPath)) {
+        $boldFontBaseName = $fontBaseName;
+        $boldFontPath = $fontPath;
+    }
     $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
@@ -2465,18 +2478,18 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ' . $resource . ' /Contents ' . $contentIds[$i] . ' 0 R >> endobj';
         $objects[$contentIds[$i]] = simple_pdf_stream_object($contentIds[$i], '', $stream);
     }
-    $objects[$f1Id] = $f1Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [' . $cidFont1Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
-    $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
-    $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
+    $objects[$f1Id] = $f1Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /' . $fontBaseName . ' /Encoding /Identity-H /DescendantFonts [' . $cidFont1Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
+    $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $fontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
+    $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $fontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
     $objects[$toUnicodeId] = simple_pdf_stream_object($toUnicodeId, '', $toUnicode);
     $objects[$fontFile1Id] = simple_pdf_stream_object($fontFile1Id, '/Length1 ' . strlen($fontData), $fontData, true);
     $objects[$cidMap1Id] = simple_pdf_stream_object($cidMap1Id, '', $cidToGidMap, true);
     $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
     $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
-    $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans-Bold /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
-    $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans-Bold /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
+    $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /' . $boldFontBaseName . ' /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
+    $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $boldFontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
     $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? simple_pdf_stream_object($smaskId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', $logo['smask']) : ($smaskId . ' 0 obj << >> endobj');
-    $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /DejaVuSans-Bold /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
+    $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $boldFontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
     $objects[$cidMap2Id] = simple_pdf_stream_object($cidMap2Id, '', $boldCidToGidMap, true);
     $objects[$fontFile2Id] = simple_pdf_stream_object($fontFile2Id, '/Length1 ' . strlen($boldFontData), $boldFontData, true);
 
