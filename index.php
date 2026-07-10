@@ -2349,6 +2349,109 @@ function simple_pdf_png_info($path) {
     return ['width' => $width, 'height' => $height, 'colorspace' => $colorspace, 'colors' => $colors, 'bits' => $bitDepth, 'data' => $idat, 'smask' => ''];
 }
 
+
+function simple_pdf_raster_image_stream($image) {
+    $width = imagesx($image);
+    $height = imagesy($image);
+    $rgb = '';
+    for ($y = 0; $y < $height; $y++) {
+        for ($x = 0; $x < $width; $x++) {
+            $color = imagecolorat($image, $x, $y);
+            $rgb .= chr(($color >> 16) & 0xFF) . chr(($color >> 8) & 0xFF) . chr($color & 0xFF);
+        }
+    }
+    return ['width' => $width, 'height' => $height, 'data' => gzcompress($rgb)];
+}
+
+function simple_pdf_draw_ttf_text($image, $fontPath, $fontSize, $x, $y, $text, $scale = 2) {
+    $black = imagecolorallocate($image, 0, 0, 0);
+    imagettftext($image, (int)round($fontSize * $scale), 0, (int)round($x * $scale), (int)round($y * $scale), $black, $fontPath, (string)$text);
+}
+
+function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath = '') {
+    $scale = 2;
+    $pageWidth = 595;
+    $pageHeight = 842;
+    $pages = [];
+    $newPage = function ($showHeader = true) use (&$pages, $scale, $pageWidth, $pageHeight, $logoPath, $boldFontPath) {
+        $image = imagecreatetruecolor($pageWidth * $scale, $pageHeight * $scale);
+        $white = imagecolorallocate($image, 255, 255, 255);
+        imagefilledrectangle($image, 0, 0, imagesx($image), imagesy($image), $white);
+        if ($showHeader && is_readable($logoPath) && function_exists('imagecreatefrompng')) {
+            $logo = @imagecreatefrompng($logoPath);
+            if ($logo) {
+                imagealphablending($logo, true);
+                $logoWidth = 96;
+                $logoHeight = max(1, (int)round($logoWidth * (imagesy($logo) / max(1, imagesx($logo)))));
+                imagecopyresampled($image, $logo, 95 * $scale, (800 - $logoHeight) * $scale, 0, 0, $logoWidth * $scale, $logoHeight * $scale, imagesx($logo), imagesy($logo));
+                imagedestroy($logo);
+            }
+        }
+        if ($showHeader) {
+            $contactY = 792;
+            foreach (['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'] as $line) {
+                simple_pdf_draw_ttf_text($image, $boldFontPath, 10, 375, $contactY, $line, $scale);
+                $contactY -= 14;
+            }
+        }
+        $pages[] = $image;
+        return $showHeader ? 660 : 800;
+    };
+
+    $logoPath = is_readable($logoPath) ? $logoPath : '';
+    $y = $newPage(true);
+    $x = 40;
+    $maxWidth = 515;
+    foreach ($blocks as $blockIndex => $block) {
+        $style = $block['style'] ?? '';
+        $isHeading = $style === 'heading';
+        $isGreeting = $style === 'greeting';
+        $fontSize = 10;
+        $isCompact = !empty($block['compact']);
+        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
+        $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
+        $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
+        $y -= $before;
+        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
+            if ($y < 42) $y = $newPage(false);
+            $lineX = $isGreeting ? max(40, (int)round(($pageWidth - simple_pdf_text_width($line, $fontSize)) / 2)) : $x;
+            simple_pdf_draw_ttf_text($pages[count($pages) - 1], $isHeading ? $boldFontPath : $fontPath, $fontSize, $lineX, $y, $line, $scale);
+            $y -= $leading;
+        }
+        $y -= $after;
+    }
+
+    $pageCount = count($pages);
+    $pageIds = [];
+    $contentIds = [];
+    $imageIds = [];
+    for ($i = 0; $i < $pageCount; $i++) {
+        $pageIds[] = 3 + ($i * 3);
+        $contentIds[] = 4 + ($i * 3);
+        $imageIds[] = 5 + ($i * 3);
+    }
+    $objects = [
+        1 => '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+        2 => '2 0 obj << /Type /Pages /Kids [' . implode(' ', array_map(fn($id) => $id . ' 0 R', $pageIds)) . '] /Count ' . $pageCount . ' >> endobj',
+    ];
+    foreach ($pages as $i => $image) {
+        $name = '/Pg' . ($i + 1);
+        $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ' . $pageWidth . ' ' . $pageHeight . '] /Resources << /XObject << ' . $name . ' ' . $imageIds[$i] . ' 0 R >> >> /Contents ' . $contentIds[$i] . ' 0 R >> endobj';
+        $objects[$contentIds[$i]] = simple_pdf_stream_object($contentIds[$i], '', 'q ' . $pageWidth . ' 0 0 ' . $pageHeight . ' 0 0 cm ' . $name . ' Do Q');
+        $stream = simple_pdf_raster_image_stream($image);
+        imagedestroy($image);
+        $objects[$imageIds[$i]] = simple_pdf_stream_object($imageIds[$i], '/Type /XObject /Subtype /Image /Width ' . $stream['width'] . ' /Height ' . $stream['height'] . ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode', $stream['data']);
+    }
+    ksort($objects);
+    $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+    $offsets = [0];
+    foreach ($objects as $id => $object) { $offsets[$id] = strlen($pdf); $pdf .= $object . "\n"; }
+    $xref = strlen($pdf);
+    $pdf .= "xref\n0 " . (max(array_keys($objects)) + 1) . "\n0000000000 65535 f \n";
+    for ($i = 1; $i <= max(array_keys($objects)); $i++) $pdf .= isset($offsets[$i]) ? sprintf("%010d 00000 n \n", $offsets[$i]) : "0000000000 65535 f \n";
+    return $pdf . "trailer << /Size " . (max(array_keys($objects)) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+}
+
 function response_pdf_greeting_word($sex) {
     $sex = mb_strtolower(trim((string)$sex), 'UTF-8');
     if (in_array($sex, ['женщина', 'ж', 'жен', 'женский', 'female', '2'], true)) return 'Уважаемая';
@@ -2405,6 +2508,10 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         ['text' => 'С уважением,', 'style' => 'paragraph_spaced'],
         ['text' => 'Команда специалистов Adaptogenzz', 'style' => 'paragraph'],
     ]);
+
+    if (function_exists('imagettftext') && is_readable($fontPath)) {
+        return simple_pdf_raster_document($blocks, $fontPath, is_readable($boldFontPath) ? $boldFontPath : $fontPath, is_readable(__DIR__ . '/logo22.png') ? __DIR__ . '/logo22.png' : __DIR__ . '/logo11.png');
+    }
 
     $pageStreams = [];
     $pdfLines = [];
@@ -2487,22 +2594,19 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     }
     $objects[$f1Id] = $f1Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /' . $fontBaseName . ' /Encoding /Identity-H /DescendantFonts [' . $cidFont1Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
     $objects[$cidFont1Id] = $cidFont1Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $fontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor1Id . ' 0 R /CIDToGIDMap ' . $cidMap1Id . ' 0 R /DW 600 >> endobj';
-    $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $fontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile1Id . ' 0 R >> endobj';
+    $objects[$fontDescriptor1Id] = $fontDescriptor1Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $fontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 80 /FontBBox [-1021 -463 1794 1232] >> endobj';
     $objects[$toUnicodeId] = simple_pdf_stream_object($toUnicodeId, '', $toUnicode);
-    // Store font programs uncompressed. Acrobat is stricter than browser PDF
-    // viewers when extracting embedded TrueType fonts, and leaving FontFile2 as
-    // a plain stream avoids false "cannot extract embedded font" errors while
-    // preserving searchable/selectable Cyrillic text via the Type0 font mapping.
-    $objects[$fontFile1Id] = simple_pdf_stream_object($fontFile1Id, '/Length1 ' . strlen($fontData), $fontData, false);
+    // Do not embed FontFile2 in the vector fallback: Acrobat can reject the
+    // hand-built embedded font streams. The normal GD raster path above avoids
+    // PDF fonts entirely; this fallback keeps ToUnicode/CID maps for text data.
     $objects[$cidMap1Id] = simple_pdf_stream_object($cidMap1Id, '', $cidToGidMap, true);
     $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
     $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
     $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /' . $boldFontBaseName . ' /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
     $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $boldFontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
     $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? simple_pdf_stream_object($smaskId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', $logo['smask']) : ($smaskId . ' 0 obj << >> endobj');
-    $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $boldFontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] /FontFile2 ' . $fontFile2Id . ' 0 R >> endobj';
+    $objects[$fontDescriptor2Id] = $fontDescriptor2Id . ' 0 obj << /Type /FontDescriptor /FontName /' . $boldFontBaseName . ' /Flags 4 /Ascent 928 /Descent -236 /CapHeight 729 /ItalicAngle 0 /StemV 120 /FontBBox [-1021 -463 1794 1232] >> endobj';
     $objects[$cidMap2Id] = simple_pdf_stream_object($cidMap2Id, '', $boldCidToGidMap, true);
-    $objects[$fontFile2Id] = simple_pdf_stream_object($fontFile2Id, '/Length1 ' . strlen($boldFontData), $boldFontData, false);
 
     ksort($objects);
     $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
