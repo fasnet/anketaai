@@ -2393,7 +2393,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
             $logo = @imagecreatefrompng($logoPath);
             if ($logo) {
                 imagealphablending($logo, true);
-                $logoWidth = 96;
+                $logoWidth = 72;
                 $logoHeight = max(1, (int)round($logoWidth * (imagesy($logo) / max(1, imagesx($logo)))));
                 imagecopyresampled($image, $logo, 95 * $scale, 42 * $scale, 0, 0, $logoWidth * $scale, $logoHeight * $scale, imagesx($logo), imagesy($logo));
                 imagedestroy($logo);
@@ -2421,8 +2421,9 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $fontSize = 8;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
-        $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
-        $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
+        $blockGap = 15;
+        $before = $blockIndex === 0 ? 0 : $blockGap;
+        $after = 0;
         $y += $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth, $isHeading ? $boldFontPath : $fontPath) as $line) {
             if ($y > $pageHeight - 42) $y = $newPage(false);
@@ -2531,7 +2532,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $startPage = function ($showHeader = true) use (&$pdfLines, $logo) {
         $pdfLines = [];
         if ($showHeader && $logo) {
-            $logoWidth = 96;
+            $logoWidth = 72;
             $logoHeight = max(1, (int)round($logoWidth * ((float)$logo['height'] / max(1, (float)$logo['width']))));
             $logoY = 800 - $logoHeight;
             $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 95 ' . $logoY . ' cm /Im1 Do Q';
@@ -2541,10 +2542,10 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $contactLines = ['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'];
             $contactY = 792;
             foreach ($contactLines as $line) {
-                $pdfLines[] = '/F2 14 Tf';
+                $pdfLines[] = '/F2 10 Tf';
                 $pdfLines[] = '1 0 0 1 375 ' . $contactY . ' Tm';
                 $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
-                $contactY -= 20;
+                $contactY -= 14;
             }
             return 660;
         }
@@ -2565,8 +2566,9 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $fontSize = 8;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
-        $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
-        $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
+        $blockGap = 15;
+        $before = $blockIndex === 0 ? 0 : $blockGap;
+        $after = 0;
         $y -= $before;
         foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth, $isHeading ? $boldFontPath : $fontPath) as $line) {
             if ($y < 42) {
