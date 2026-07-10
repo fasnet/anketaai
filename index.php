@@ -2406,9 +2406,9 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 14;
+        $fontSize = 10;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
+        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 13 : 15);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y += $before;
@@ -2550,9 +2550,9 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 14;
+        $fontSize = 10;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
+        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 13 : 15);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y -= $before;
