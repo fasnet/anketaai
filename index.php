@@ -2863,6 +2863,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'se
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'analyze')) {
     header('Content-Type: application/json; charset=utf-8');
 
+    if (postv('personal_data_consent') !== '1' || postv('offer_agreement_consent') !== '1') {
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Для отправки анкеты необходимо подтвердить согласие на обработку персональных данных и принять условия договора-оферты.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
     $questionnaire = questionnaire_find(postv('questionnaire_id', $_GET['qid'] ?? ($_GET['id'] ?? null)));
     $sections = $questionnaire['sections'] ?? questionnaire_sections_static();
     $hintConfig = load_hint_config($sections, $questionnaire['id'] ?? null);
@@ -3273,6 +3281,10 @@ $sections = apply_hint_config($sections, $hintConfig);
         .top-grid .question{border-bottom:1px solid #edf1ee;padding-bottom:8px}
         .section-content .question:has(textarea),.section-content .question:has(.checklist){grid-column:1 / -1}
         .sex-hide{display:none}
+        .consent-card{margin:0 0 22px;padding:22px;border:1px solid var(--line);border-radius:16px;background:#fff;box-shadow:var(--shadow);display:grid;gap:16px}
+        .consent-option{display:flex;align-items:flex-start;gap:12px;color:#303942;line-height:1.55;font-weight:600}
+        .consent-option input{margin-top:4px}
+        .consent-option a{color:var(--green-dark);text-decoration:underline;text-underline-offset:3px}
         .actions{
             position:sticky;bottom:0;z-index:20;
             display:flex;justify-content:flex-end;gap:18px;align-items:center;
@@ -3669,6 +3681,17 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?= render_section_card($section, $sectionNumber++) ?>
         <?php endforeach; ?>
 
+        <section class="consent-card" aria-label="Обязательные согласия">
+            <label class="consent-option">
+                <input type="checkbox" name="personal_data_consent" value="1" required>
+                <span>Я согласен (согласна) с обработкой персональных данных в соответствии с <a href="https://back.nutrition-institute.ru/upload/law/PD%20Helix.pdf" target="_blank" rel="noopener noreferrer">политикой</a>.</span>
+            </label>
+            <label class="consent-option">
+                <input type="checkbox" name="offer_agreement_consent" value="1" required>
+                <span>Я согласен (согласна) и принимаю условия <a href="https://back.nutrition-institute.ru/upload/law/PubOfert_Anketa.pdf" target="_blank" rel="noopener noreferrer">договора-оферты</a>.</span>
+            </label>
+        </section>
+
         <div class="actions">
             <div class="progress-card">
                 <span class="progress-icon">✓</span>
@@ -4000,6 +4023,10 @@ $sections = apply_hint_config($sections, $hintConfig);
 
         form.addEventListener('submit', async (ev) => {
             ev.preventDefault();
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
             const paymentRequired = (form.dataset.paymentRequired || 'Y').toUpperCase() === 'Y';
             const paymentUrl = form.dataset.paymentUrl || '';
 
