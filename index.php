@@ -2357,19 +2357,20 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Prefer DejaVu Sans for generated PDFs: Acrobat reliably extracts the
-    // embedded DejaVu TrueType programs and the font contains Cyrillic glyphs.
-    // Keep Liberation/Noto only as fallbacks for servers without DejaVu.
+    // Prefer Liberation/Noto fonts for generated PDFs. Acrobat can fail to
+    // extract embedded DejaVuSans-Bold on some Windows installations, replacing
+    // Cyrillic text with dotted placeholders. DejaVu stays as a last-resort
+    // fallback for servers where the preferred Cyrillic-capable fonts are absent.
     $fontCandidates = [
-        ['DejaVuSans', 'DejaVuSans-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
         ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
         ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
+        ['DejaVuSans', 'DejaVuSans-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
     ];
-    $fontBaseName = 'DejaVuSans';
-    $boldFontBaseName = 'DejaVuSans-Bold';
-    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+    $fontBaseName = 'LiberationSans';
+    $boldFontBaseName = 'LiberationSans-Bold';
+    $fontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf';
     foreach ($fontCandidates as [$regularName, $boldName, $regularPath, $boldPath]) {
         if (!is_readable($regularPath)) continue;
         $fontBaseName = $regularName;
