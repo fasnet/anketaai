@@ -2421,7 +2421,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $fontSize = 8;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
-        $blockGap = 5;
+        $blockGap = 15;
         $before = $blockIndex === 0 ? 0 : $blockGap;
         $after = 0;
         $y += $before;
@@ -2566,7 +2566,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $fontSize = 8;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
-        $blockGap = 5;
+        $blockGap = 15;
         $before = $blockIndex === 0 ? 0 : $blockGap;
         $after = 0;
         $y -= $before;
