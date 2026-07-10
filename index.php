@@ -2357,22 +2357,18 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Prefer Noto for generated PDFs: it has broad Cyrillic coverage and is
-    // generally reliable in Adobe Acrobat when embedded. Keep common Linux
-    // Cyrillic-capable families as fallbacks for environments without Noto.
+    // Use Noto as the primary family for generated PDFs: Noto Sans first,
+    // then Noto Serif. Avoid DejaVu fonts in PDFs because embedded DejaVu faces
+    // can render inconsistently in Acrobat.
     $fontCandidates = [
         ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
         ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
         ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
-        ['DejaVuSerif', 'DejaVuSerif-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'],
-        // Keep DejaVuSans as a regular-only fallback because Acrobat can be
-        // sensitive to some embedded DejaVu bold faces.
-        ['DejaVuSans', 'DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
     ];
-    $fontBaseName = 'DejaVuSans';
-    $boldFontBaseName = 'DejaVuSans';
-    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-    $boldFontPath = $fontPath;
+    $fontBaseName = 'NotoSans';
+    $boldFontBaseName = 'NotoSans-Bold';
+    $fontPath = '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf';
+    $boldFontPath = '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf';
     foreach ($fontCandidates as [$regularName, $boldName, $regularPath, $boldPath]) {
         if (!is_readable($regularPath)) continue;
         $fontBaseName = $regularName;
