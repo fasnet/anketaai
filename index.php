@@ -2178,25 +2178,37 @@ function simple_pdf_text_width($text, $fontSize) {
     return ($chars - $wide) * $fontSize * 0.52 + $wide * $fontSize * 0.62;
 }
 
-function simple_pdf_wrap_text($text, $fontSize, $maxWidth) {
+function simple_pdf_ttf_text_width($text, $fontSize, $fontPath = '') {
+    $text = (string)$text;
+    if ($fontPath !== '' && function_exists('imagettfbbox') && is_readable($fontPath)) {
+        $box = @imagettfbbox($fontSize, 0, $fontPath, $text);
+        if (is_array($box) && count($box) >= 8) {
+            $xs = [$box[0], $box[2], $box[4], $box[6]];
+            return max($xs) - min($xs);
+        }
+    }
+    return simple_pdf_text_width($text, $fontSize);
+}
+
+function simple_pdf_wrap_text($text, $fontSize, $maxWidth, $fontPath = '') {
     $lines = [];
     foreach (preg_split('/\R/u', (string)$text) ?: [''] as $paragraph) {
         $words = preg_split('/\s+/u', trim($paragraph), -1, PREG_SPLIT_NO_EMPTY);
         $line = '';
         foreach ($words as $word) {
             $candidate = $line === '' ? $word : $line . ' ' . $word;
-            if ($line !== '' && simple_pdf_text_width($candidate, $fontSize) > $maxWidth) {
+            if ($line !== '' && simple_pdf_ttf_text_width($candidate, $fontSize, $fontPath) > $maxWidth) {
                 $lines[] = $line;
                 $line = $word;
             } else {
                 $line = $candidate;
             }
-            while (simple_pdf_text_width($line, $fontSize) > $maxWidth && mb_strlen($line, 'UTF-8') > 1) {
+            while (simple_pdf_ttf_text_width($line, $fontSize, $fontPath) > $maxWidth && mb_strlen($line, 'UTF-8') > 1) {
                 $chunk = '';
                 $rest = $line;
                 while ($rest !== '') {
                     $char = mb_substr($rest, 0, 1, 'UTF-8');
-                    if ($chunk !== '' && simple_pdf_text_width($chunk . $char, $fontSize) > $maxWidth) break;
+                    if ($chunk !== '' && simple_pdf_ttf_text_width($chunk . $char, $fontSize, $fontPath) > $maxWidth) break;
                     $chunk .= $char;
                     $rest = mb_substr($rest, 1, null, 'UTF-8');
                 }
@@ -2401,7 +2413,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
     $logoPath = is_readable($logoPath) ? $logoPath : '';
     $y = $newPage(true);
     $x = 40;
-    $maxWidth = 515;
+    $maxWidth = 500;
     foreach ($blocks as $blockIndex => $block) {
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
@@ -2412,7 +2424,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y += $before;
-        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
+        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth, $isHeading ? $boldFontPath : $fontPath) as $line) {
             if ($y > $pageHeight - 42) $y = $newPage(false);
             $lineX = $isGreeting ? max(40, (int)round(($pageWidth - simple_pdf_text_width($line, $fontSize)) / 2)) : $x;
             simple_pdf_draw_ttf_text($pages[count($pages) - 1], $isHeading ? $boldFontPath : $fontPath, $fontSize, $lineX, $y, $line, $scale);
@@ -2545,7 +2557,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
 
     $y = $startPage(true);
     $x = 40;
-    $maxWidth = 515;
+    $maxWidth = 500;
     foreach ($blocks as $blockIndex => $block) {
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
@@ -2556,7 +2568,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y -= $before;
-        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth) as $line) {
+        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth, $isHeading ? $boldFontPath : $fontPath) as $line) {
             if ($y < 42) {
                 $finishPage();
                 $y = $startPage(false);
