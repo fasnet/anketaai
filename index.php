@@ -2406,9 +2406,9 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 10;
+        $fontSize = 14;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
+        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y += $before;
@@ -2529,10 +2529,10 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $contactLines = ['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'];
             $contactY = 792;
             foreach ($contactLines as $line) {
-                $pdfLines[] = '/F2 10 Tf';
+                $pdfLines[] = '/F2 14 Tf';
                 $pdfLines[] = '1 0 0 1 375 ' . $contactY . ' Tm';
                 $pdfLines[] = '<' . simple_pdf_hex_text($line) . '> Tj';
-                $contactY -= 14;
+                $contactY -= 20;
             }
             return 660;
         }
@@ -2550,9 +2550,9 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 10;
+        $fontSize = 14;
         $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 16 : ($isCompact ? 12 : 14);
+        $leading = $isHeading || $isGreeting ? 22 : ($isCompact ? 18 : 20);
         $before = $blockIndex === 0 ? 0 : ($isHeading ? ($isCompact ? 12 : 46) : ($style === 'paragraph_spaced' ? 34 : ($isCompact ? 2 : 5)));
         $after = $isHeading ? ($isCompact ? 4 : 5) : ($isGreeting ? 38 : ($isCompact ? 3 : 7));
         $y -= $before;
