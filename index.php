@@ -2357,20 +2357,29 @@ function response_pdf_greeting_word($sex) {
 }
 
 function simple_pdf_document($content, $title = 'Расшифровка анкеты', $patientName = '', $patientSex = '') {
-    // Adobe Acrobat can fail to extract the embedded DejaVuSans-Bold font on some systems.
-    // Use the DejaVu Serif family for generated PDFs; it supports Cyrillic and is available
-    // in the same default Linux font package, while avoiding the problematic Sans Bold face.
-    $fontBaseName = 'DejaVuSerif';
-    $boldFontBaseName = 'DejaVuSerif-Bold';
-    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf';
-    $boldFontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf';
-    if (!is_readable($fontPath)) {
-        $fontBaseName = 'DejaVuSans';
-        $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-    }
-    if (!is_readable($boldFontPath)) {
-        $boldFontBaseName = $fontBaseName;
-        $boldFontPath = $fontPath;
+    // Prefer Noto for generated PDFs: it has broad Cyrillic coverage and is
+    // generally reliable in Adobe Acrobat when embedded. Keep common Linux
+    // Cyrillic-capable families as fallbacks for environments without Noto.
+    $fontCandidates = [
+        ['NotoSans', 'NotoSans-Bold', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf'],
+        ['NotoSerif', 'NotoSerif-Bold', '/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSerif-Bold.ttf'],
+        ['LiberationSans', 'LiberationSans-Bold', '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'],
+        ['DejaVuSerif', 'DejaVuSerif-Bold', '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'],
+        // Keep DejaVuSans as a regular-only fallback because Acrobat can be
+        // sensitive to some embedded DejaVu bold faces.
+        ['DejaVuSans', 'DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'],
+    ];
+    $fontBaseName = 'DejaVuSans';
+    $boldFontBaseName = 'DejaVuSans';
+    $fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+    $boldFontPath = $fontPath;
+    foreach ($fontCandidates as [$regularName, $boldName, $regularPath, $boldPath]) {
+        if (!is_readable($regularPath)) continue;
+        $fontBaseName = $regularName;
+        $boldFontBaseName = is_readable($boldPath) ? $boldName : $regularName;
+        $fontPath = $regularPath;
+        $boldFontPath = is_readable($boldPath) ? $boldPath : $regularPath;
+        break;
     }
     $fontData = is_readable($fontPath) ? file_get_contents($fontPath) : '';
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
