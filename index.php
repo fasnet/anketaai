@@ -2390,8 +2390,8 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         if ($showHeader) {
             $contactY = 54;
             foreach (['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'] as $line) {
-                simple_pdf_draw_ttf_text($image, $boldFontPath, 14, 375, $contactY, $line, $scale);
-                $contactY += 20;
+                simple_pdf_draw_ttf_text($image, $boldFontPath, 10, 375, $contactY, $line, $scale);
+                $contactY += 14;
             }
         }
         $pages[] = $image;
