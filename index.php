@@ -2790,35 +2790,94 @@ function rnova_filter_payload($payload) {
     return array_filter($payload, static fn($value) => trim((string)$value) !== '');
 }
 
-function rnova_patient_payload($patient) {
+function rnova_required_patient_fields_missing($patient) {
+    $required = [
+        'last_name' => ['label' => 'фамилия', 'value' => trim((string)($patient['surname'] ?? ''))],
+        'first_name' => ['label' => 'имя', 'value' => trim((string)($patient['name'] ?? ''))],
+        'third_name' => ['label' => 'отчество', 'value' => trim((string)($patient['patronymic'] ?? ''))],
+        'birth_date' => ['label' => 'дата рождения', 'value' => rnova_date($patient['dob'] ?? '')],
+    ];
+    $missing = [];
+    foreach ($required as $field) {
+        if ($field['value'] === '') {
+            $missing[] = $field['label'];
+        }
+    }
+    return $missing;
+}
+
+function rnova_patient_payload($patient, $includeMobile = true) {
     return rnova_filter_payload([
         'last_name' => trim((string)($patient['surname'] ?? '')),
         'first_name' => trim((string)($patient['name'] ?? '')),
         'third_name' => trim((string)($patient['patronymic'] ?? '')),
         'birth_date' => rnova_date($patient['dob'] ?? ''),
-        'mobile' => trim((string)($patient['phone'] ?? '')),
+        'mobile' => $includeMobile ? trim((string)($patient['phone'] ?? '')) : '',
         'email' => trim((string)($patient['email'] ?? '')),
         'gender' => rnova_gender($patient['sex'] ?? ''),
     ]);
 }
 
-function rnova_ensure_patient($response) {
-    $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
-    $phone = trim((string)($patient['phone'] ?? ''));
-    $email = trim((string)($patient['email'] ?? ''));
-    if ($phone === '' && $email === '') {
-        return ['ok' => false, 'error' => 'Для отправки в RNOVA нужен телефон или e-mail пациента.'];
+function rnova_error_contains($result, $needle) {
+    return mb_stripos((string)($result['error'] ?? ''), $needle, 0, 'UTF-8') !== false;
+}
+
+function rnova_find_patient_id($patient, $includeMobile = true) {
+    $payload = rnova_patient_payload($patient, $includeMobile);
+    $queries = [];
+    $demographicQuery = rnova_filter_payload([
+        'last_name' => $payload['last_name'] ?? '',
+        'first_name' => $payload['first_name'] ?? '',
+        'third_name' => $payload['third_name'] ?? '',
+        'birth_date' => $payload['birth_date'] ?? '',
+    ]);
+    if ($includeMobile && !empty($payload['mobile'])) {
+        $queries[] = ['mobile' => $payload['mobile']];
+    }
+    if (!empty($payload['email'])) {
+        $queries[] = ['email' => $payload['email']];
+    }
+    if (count($demographicQuery) >= 3) {
+        $queries[] = $demographicQuery;
     }
 
-    $query = rnova_filter_payload(['mobile' => $phone, 'email' => $email]);
-    $found = rnova_request('POST', 'getPatient', $query);
-    if (!$found['ok'] && (int)($found['http'] ?? 0) >= 500) return $found;
-    $patientId = rnova_response_id($found['data'] ?? []);
-    if (!$patientId) {
-        $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient));
-        if (!$created['ok']) return $created;
-        $patientId = rnova_response_id($created['data'] ?? []);
+    foreach ($queries as $query) {
+        $found = rnova_request('POST', 'getPatient', $query);
+        if (!$found['ok']) {
+            if (rnova_error_contains($found, 'Неверно указан номер телефона')) {
+                continue;
+            }
+            if ((int)($found['http'] ?? 0) >= 500) return $found;
+            continue;
+        }
+        $patientId = rnova_response_id($found['data'] ?? []);
+        if ($patientId) return ['ok' => true, 'patient_id' => $patientId];
     }
+    return ['ok' => true, 'patient_id' => null];
+}
+
+function rnova_ensure_patient($response) {
+    $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
+    $missing = rnova_required_patient_fields_missing($patient);
+    if ($missing) {
+        return ['ok' => false, 'error' => 'Для создания пациента RNOVA не заполнены обязательные поля: ' . implode(', ', $missing) . '. Обязательные параметры RNOVA: фамилия, имя, отчество, дата рождения.'];
+    }
+
+    $found = rnova_find_patient_id($patient, true);
+    if (!$found['ok']) return $found;
+    if (!empty($found['patient_id'])) return $found;
+
+    $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient, true));
+    if (!$created['ok'] && rnova_error_contains($created, 'Неверно указан номер телефона')) {
+        $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient, false));
+    }
+    if (!$created['ok'] && rnova_error_contains($created, 'Такой пациент уже существует')) {
+        $found = rnova_find_patient_id($patient, !rnova_error_contains($created, 'Неверно указан номер телефона'));
+        if (!$found['ok']) return $found;
+        if (!empty($found['patient_id'])) return $found;
+    }
+    if (!$created['ok']) return $created;
+    $patientId = rnova_response_id($created['data'] ?? []);
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
     return ['ok' => true, 'patient_id' => $patientId];
