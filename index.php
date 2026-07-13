@@ -2794,7 +2794,6 @@ function rnova_required_patient_fields_missing($patient) {
     $required = [
         'last_name' => ['label' => 'фамилия', 'value' => trim((string)($patient['surname'] ?? ''))],
         'first_name' => ['label' => 'имя', 'value' => trim((string)($patient['name'] ?? ''))],
-        'third_name' => ['label' => 'отчество', 'value' => trim((string)($patient['patronymic'] ?? ''))],
         'birth_date' => ['label' => 'дата рождения', 'value' => rnova_date($patient['dob'] ?? '')],
     ];
     $missing = [];
@@ -2807,10 +2806,16 @@ function rnova_required_patient_fields_missing($patient) {
 }
 
 function rnova_patient_payload($patient, $includeMobile = true) {
+    $firstName = trim((string)($patient['name'] ?? ''));
+    $thirdName = trim((string)($patient['patronymic'] ?? ''));
+    if ($thirdName === '') {
+        $thirdName = $firstName;
+    }
+
     return rnova_filter_payload([
         'last_name' => trim((string)($patient['surname'] ?? '')),
-        'first_name' => trim((string)($patient['name'] ?? '')),
-        'third_name' => trim((string)($patient['patronymic'] ?? '')),
+        'first_name' => $firstName,
+        'third_name' => $thirdName,
         'birth_date' => rnova_date($patient['dob'] ?? ''),
         'mobile' => $includeMobile ? trim((string)($patient['phone'] ?? '')) : '',
         'email' => trim((string)($patient['email'] ?? '')),
@@ -2860,7 +2865,7 @@ function rnova_ensure_patient($response) {
     $patient = is_array($response['patient'] ?? null) ? $response['patient'] : [];
     $missing = rnova_required_patient_fields_missing($patient);
     if ($missing) {
-        return ['ok' => false, 'error' => 'Для создания пациента RNOVA не заполнены обязательные поля: ' . implode(', ', $missing) . '. Обязательные параметры RNOVA: фамилия, имя, отчество, дата рождения.'];
+        return ['ok' => false, 'error' => 'Для создания пациента RNOVA не заполнены обязательные поля: ' . implode(', ', $missing) . '. Обязательные параметры RNOVA: фамилия, имя, дата рождения. Если отчество отсутствует, в RNOVA вместо него передаётся имя.'];
     }
 
     $found = rnova_find_patient_id($patient, true);
@@ -3349,6 +3354,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
     $name = trim((string)postv('name'));
     $patronymic = trim((string)postv('patronymic'));
     $dob = trim((string)postv('dob'));
+
+    if ($surname === '' || $name === '' || $patronymic === '' || $dob === '') {
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Заполните обязательные поля пациента: фамилия, имя, отчество и дата рождения.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
 
     $patient = [
         'surname' => $surname,
@@ -4126,7 +4139,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     </div>
                     <div class="question">
                         <div class="question-label">Отчество</div>
-                        <input class="field" type="text" name="patronymic">
+                        <input class="field" type="text" name="patronymic" required>
                     </div>
                     <div class="question">
                         <div class="question-label">Дата рождения</div>
