@@ -194,6 +194,32 @@ function db_init(PDO $pdo) {
         setting_value TEXT NULL,
         updated_at DATETIME NOT NULL
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS billing_history (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        response_id VARCHAR(64) NOT NULL,
+        survey VARCHAR(255) NULL,
+        patient_surname VARCHAR(255) NULL,
+        patient_name VARCHAR(255) NULL,
+        patient_patronymic VARCHAR(255) NULL,
+        vsegpt_cost DECIMAL(12,6) NOT NULL DEFAULT 0,
+        billing_amount DECIMAL(12,6) NOT NULL DEFAULT 0,
+        vsegpt_usage_json LONGTEXT NULL,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL,
+        UNIQUE KEY response_unique (response_id),
+        INDEX billing_updated_idx (updated_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    db_ensure_columns($pdo, 'billing_history', [
+        'survey' => 'VARCHAR(255) NULL',
+        'patient_surname' => 'VARCHAR(255) NULL', 'patient_name' => 'VARCHAR(255) NULL', 'patient_patronymic' => 'VARCHAR(255) NULL',
+        'vsegpt_cost' => 'DECIMAL(12,6) NOT NULL DEFAULT 0', 'billing_amount' => 'DECIMAL(12,6) NOT NULL DEFAULT 0',
+        'vsegpt_usage_json' => 'LONGTEXT NULL'
+    ]);
+    $pdo->exec("INSERT INTO billing_history (response_id, survey, patient_surname, patient_name, patient_patronymic, vsegpt_cost, billing_amount, vsegpt_usage_json, created_at, updated_at)
+        SELECT id, survey, patient_surname, patient_name, patient_patronymic, vsegpt_cost, billing_amount, vsegpt_usage_json, created_at, updated_at
+        FROM patient_responses
+        WHERE billing_amount > 0
+        ON DUPLICATE KEY UPDATE survey=VALUES(survey), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), vsegpt_cost=VALUES(vsegpt_cost), billing_amount=VALUES(billing_amount), vsegpt_usage_json=VALUES(vsegpt_usage_json), updated_at=VALUES(updated_at)");
 
     db_ensure_columns($pdo, 'app_users', [
         'full_name' => 'VARCHAR(255) NULL',
@@ -540,6 +566,7 @@ function upsert_patient_response($record) {
     $patient = is_array($record['patient'] ?? null) ? $record['patient'] : [];
     $ok = $stmt->execute([(string)$record['id'], $record['questionnaire_id'] ?? null, $record['survey'] ?? null, $record['category'] ?? null, $record['status'] ?? null, (int)($record['progress'] ?? 0), (int)($record['filled_answers'] ?? 0), (int)($record['total_answers'] ?? 0), $patient['surname'] ?? '', $patient['name'] ?? '', $patient['patronymic'] ?? '', $patient['dob'] ?? '', $patient['phone'] ?? '', $patient['email'] ?? '', $patient['sex'] ?? '', $patient['height'] ?? '', $patient['weight'] ?? '', $patient['waist'] ?? '', $patient['filled_at'] ?? '', $record['analysis_raw'] ?? '', $record['ai_answer_html'] ?? '', (float)($record['vsegpt_cost'] ?? 0), (float)($record['billing_amount'] ?? 0), $record['vsegpt_usage_json'] ?? '', $record['mis_sent_at'] ?? null, $record['mis_patient_id'] ?? null, $record['mis_task_id'] ?? null, json_encode($record['mis_task'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), json_encode($record['mis_file'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), db_date($record['created_at'] ?? null), db_date($record['updated_at'] ?? null)]);
     if (!$ok) return false;
+    upsert_billing_history_for_response($record);
     $id = (string)$record['id'];
     db()->prepare('DELETE FROM patient_response_hints WHERE response_id=?')->execute([$id]);
     db()->prepare('DELETE FROM patient_response_history WHERE response_id=?')->execute([$id]);
@@ -974,6 +1001,27 @@ function delete_patient_response($id) {
     $stmt = db()->prepare('DELETE FROM patient_responses WHERE id=?');
     $stmt->execute([(string)$id]);
     return $stmt->rowCount() > 0;
+}
+
+function upsert_billing_history_for_response($record) {
+    $amount = (float)($record['billing_amount'] ?? 0);
+    if ($amount <= 0) {
+        return false;
+    }
+    $patient = is_array($record['patient'] ?? null) ? $record['patient'] : [];
+    $stmt = db()->prepare('INSERT INTO billing_history (response_id, survey, patient_surname, patient_name, patient_patronymic, vsegpt_cost, billing_amount, vsegpt_usage_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE survey=VALUES(survey), patient_surname=VALUES(patient_surname), patient_name=VALUES(patient_name), patient_patronymic=VALUES(patient_patronymic), vsegpt_cost=VALUES(vsegpt_cost), billing_amount=VALUES(billing_amount), vsegpt_usage_json=VALUES(vsegpt_usage_json), updated_at=VALUES(updated_at)');
+    return $stmt->execute([
+        (string)($record['id'] ?? ''),
+        $record['survey'] ?? null,
+        $patient['surname'] ?? '',
+        $patient['name'] ?? '',
+        $patient['patronymic'] ?? '',
+        (float)($record['vsegpt_cost'] ?? 0),
+        $amount,
+        $record['vsegpt_usage_json'] ?? '',
+        db_date($record['created_at'] ?? null),
+        db_date($record['updated_at'] ?? null),
+    ]);
 }
 
 function find_patient_response($id = null) {
@@ -1970,7 +2018,7 @@ function billing_period_bounds() {
 }
 
 function billing_items($fromDateTime, $toDateTime) {
-    $stmt = db()->prepare('SELECT id, survey, patient_surname, patient_name, patient_patronymic, created_at, updated_at, vsegpt_cost, billing_amount, vsegpt_usage_json FROM patient_responses WHERE billing_amount > 0 AND updated_at BETWEEN ? AND ? ORDER BY updated_at DESC');
+    $stmt = db()->prepare('SELECT bh.response_id AS id, bh.survey, bh.patient_surname, bh.patient_name, bh.patient_patronymic, bh.created_at, bh.updated_at, bh.vsegpt_cost, bh.billing_amount, bh.vsegpt_usage_json, pr.id AS response_exists FROM billing_history bh LEFT JOIN patient_responses pr ON pr.id = bh.response_id WHERE bh.billing_amount > 0 AND bh.updated_at BETWEEN ? AND ? ORDER BY bh.updated_at DESC');
     $stmt->execute([$fromDateTime, $toDateTime]);
     return $stmt->fetchAll();
 }
@@ -2648,7 +2696,7 @@ function rnova_response_id($data) {
     if (!is_array($data)) {
         return null;
     }
-    foreach (['patient_id', 'task_id', 'file_id', 'id'] as $key) {
+    foreach (['patient_id', 'task_id', 'taskId', 'file_id', 'fileId', 'id', 'ID'] as $key) {
         if (isset($data[$key]) && (is_numeric($data[$key]) || trim((string)$data[$key]) !== '')) {
             return $data[$key];
         }
@@ -2794,7 +2842,11 @@ function create_rnova_task_for_response($response) {
         'due_date' => rnova_date($due),
     ]);
     if (!$task['ok']) return $task;
-    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'task_id' => rnova_response_id($task['data'] ?? [])];
+    $taskId = rnova_response_id($task['data'] ?? []);
+    if (!$taskId) {
+        return ['ok' => false, 'error' => 'RNOVA создала задачу, но не вернула ID задачи.', 'patient_id' => $patientId, 'task' => $task['data']];
+    }
+    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'task_id' => $taskId];
 }
 
 function attach_response_pdf_to_rnova_task($response) {
@@ -3817,7 +3869,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             <?php foreach ($billingRows as $row): ?>
                 <?php $patientName = trim(($row['patient_surname'] ?? '') . ' ' . ($row['patient_name'] ?? '') . ' ' . ($row['patient_patronymic'] ?? '')); ?>
                 <article class="table-row" style="grid-template-columns:1.5fr 1.2fr 1fr">
-                    <div class="survey-title"><a href="?page=response-view&amp;id=<?= e($row['id']) ?>"><?= e($patientName !== '' ? $patientName : 'Пациент') ?></a></div>
+                    <div class="survey-title"><?php if (!empty($row['response_exists'])): ?><a href="?page=response-view&amp;id=<?= e($row['id']) ?>"><?= e($patientName !== '' ? $patientName : 'Пациент') ?></a><?php else: ?><?= e($patientName !== '' ? $patientName : 'Пациент') ?> <span class="table-muted">(анкета удалена)</span><?php endif; ?></div>
                     <div><?= e($row['survey'] ?? 'Анкета здоровья') ?></div>
                     <div><?= e(format_response_date($row['updated_at'] ?? $row['created_at'] ?? '')) ?></div>
                 </article>
