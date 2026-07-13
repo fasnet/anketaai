@@ -2843,6 +2843,82 @@ function queue_rnova_task_for_response_id($responseId) {
     return $task;
 }
 
+
+function generate_ai_analysis_for_response($response) {
+    if (!is_array($response)) {
+        return ['ok' => false, 'error' => 'Ответ пациента не найден.'];
+    }
+    $readableAnswers = is_array($response['answers'] ?? null) ? $response['answers'] : [];
+    $hints = is_array($response['hints'] ?? null) ? $response['hints'] : [];
+    if (!response_has_medical_answers($readableAnswers)) {
+        return ['ok' => false, 'error' => 'Нельзя создать ИИ-ответ: медицинские блоки анкеты пустые.'];
+    }
+
+$system = <<<SYS
+Ты лучший врач мира, эксперт по превентивной, интегративной и доказательной медицине.
+Твоя задача — внимательно проанализировать анкету пациента и дать медицински грамотные рекомендации по обследованиям.
+
+ВАЖНЫЕ ПРАВИЛА:
+
+1. Анализируй только ответы анкеты из блоков 2-19.
+2. Блок 1 с персональными данными пациента не используй для медицинского анализа.
+3. Не ставь окончательный диагноз. Формулируй выводы как возможные причины, риски или направления для проверки.
+4. Ты обязан рекомендовать анализы и обследования, которые подходят под жалобы, цели визита, симптомы, анамнез и наследственность пациента.
+5. Если в анкете/PDF напротив выбранного пациентом ответа были указаны анализы, обследования или консультации врача, эти рекомендации считаются обязательными.
+6. Все обязательные рекомендации из поля internal_hints должны быть включены в recommended_tests или specialists.
+7. Не удаляй и не игнорируй анализы из internal_hints, даже если считаешь их второстепенными.
+8. Если один и тот же анализ встречается несколько раз, объедини дубли.
+9. Разделяй лабораторные анализы, инструментальные обследования и консультации специалистов логично, но в JSON используй заданные поля.
+10. При наличии потенциально опасных симптомов добавляй их в red_flags.
+11. Ответ должен быть понятным для врача и администратора клиники.
+12. Ответ должен быть на русском языке.
+13. Верни только валидный JSON без markdown, без поясняющего текста и без code fences.
+
+Формат ответа строго такой:
+{
+  "summary": "Краткая оценка состояния пациента",
+  "priority": "низкий|средний|высокий",
+  "likely_issues": ["возможная причина или направление проверки"],
+  "recommended_tests": ["анализ или обследование"],
+  "specialists": ["специалист"],
+  "red_flags": ["симптом или ситуация, требующая внимания"],
+  "next_steps": ["следующий шаг"]
+}
+
+Если данных недостаточно, всё равно сформируй предварительные рекомендации на основании выбранных ответов и internal_hints.
+SYS;
+
+    $userPayload = [
+        'questionnaire' => $readableAnswers,
+        'internal_hints' => $hints,
+        'mandatory_recommendations_from_pdf' => $hints,
+        'rules' => [
+            'block1_excluded_from_ai' => true,
+            'language' => 'ru',
+            'must_include_pdf_recommendations' => true,
+            'deduplicate_tests' => true,
+        ],
+    ];
+    $api = call_vsegpt([
+        ['role' => 'system', 'content' => $system],
+        ['role' => 'user', 'content' => json_encode($userPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)],
+    ]);
+    if (!$api['ok']) return $api;
+    $decoded = json_decode($api['raw'], true);
+    if (!is_array($decoded)) return ['ok' => false, 'error' => 'VSEGPT вернул невалидный JSON.', 'raw' => $api['raw']];
+    $content = $decoded['choices'][0]['message']['content'] ?? '';
+    $analysis = json_decode(extract_json($content), true);
+    $html = is_array($analysis) ? ai_analysis_to_html($analysis) : '<p>ИИ-анализ пока не сформирован.</p>';
+    return [
+        'ok' => true,
+        'analysis' => is_array($analysis) ? $analysis : null,
+        'analysis_raw' => $content,
+        'ai_answer_html' => $html,
+        'vsegpt_cost' => vsegpt_cost_from_response($decoded),
+        'vsegpt_usage_json' => json_encode($decoded['usage'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '',
+    ];
+}
+
 /*
   API endpoint
 */
@@ -3018,6 +3094,65 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'sa
     exit;
 }
 
+
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'bulk_create_rnova_tasks')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $items = patient_response_items();
+    $created = 0;
+    $skipped = 0;
+    $errors = [];
+    foreach ($items as $item) {
+        if (response_has_rnova_task($item)) {
+            $skipped++;
+            continue;
+        }
+        $task = queue_rnova_task_for_response_id($item['id'] ?? '');
+        if (!empty($task['ok'])) {
+            if (empty($task['skipped'])) $created++;
+            else $skipped++;
+        } else {
+            $errors[] = ($item['patient_display'] ?? ($item['id'] ?? 'Ответ')) . ': ' . ($task['error'] ?? 'не удалось создать задачу RNOVA');
+        }
+    }
+    echo json_encode([
+        'ok' => count($errors) === 0,
+        'created' => $created,
+        'skipped' => $skipped,
+        'errors' => $errors,
+        'message' => 'Создано задач RNOVA: ' . $created . '. Пропущено: ' . $skipped . (count($errors) ? '. Ошибок: ' . count($errors) : '.'),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'regenerate_ai_answer')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $id = trim((string)postv('id'));
+    $response = $id !== '' ? find_patient_response($id) : null;
+    if (!$response) {
+        echo json_encode(['ok' => false, 'error' => 'Ответ пациента не найден.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+    if (response_has_ai_analysis($response)) {
+        echo json_encode(['ok' => false, 'error' => 'ИИ-ответ уже создан.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+    $generated = generate_ai_analysis_for_response($response);
+    if (!empty($generated['ok'])) {
+        update_patient_response($id, function ($item) use ($generated) {
+            $item['analysis'] = $generated['analysis'] ?? null;
+            $item['analysis_raw'] = $generated['analysis_raw'] ?? '';
+            $item['ai_answer_html'] = $generated['ai_answer_html'] ?? '<p>ИИ-анализ пока не сформирован.</p>';
+            $item['vsegpt_cost'] = (float)($generated['vsegpt_cost'] ?? 0);
+            $item['billing_amount'] = (float)($generated['vsegpt_cost'] ?? 0) * 3;
+            $item['vsegpt_usage_json'] = $generated['vsegpt_usage_json'] ?? '';
+            $item['history'][] = ['date' => date('c'), 'event' => 'ИИ-ответ пересоздан'];
+            return $item;
+        });
+    }
+    echo json_encode($generated + ['message' => !empty($generated['ok']) ? 'ИИ-ответ пересоздан.' : ($generated['error'] ?? 'Не удалось пересоздать ИИ-ответ.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'delete_response')) {
     header('Content-Type: application/json; charset=utf-8');
@@ -3565,7 +3700,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         .admin-sidebar{position:sticky;top:0;height:100vh;border-right:1px solid #e4e9e6;background:rgba(255,255,255,.92);display:flex;flex-direction:column;padding:34px 18px 32px;box-shadow:8px 0 32px rgba(42,55,50,.035)}
         .brand{display:flex;align-items:center;gap:16px;padding:0 12px 36px}.brand-mark{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;color:var(--green-dark);background:#fff}.brand-mark .logo-svg{width:40px;height:40px}.app-logo-img{width:100%;height:100%;object-fit:contain;border-radius:inherit}.brand-title{font-weight:900;color:var(--green-dark);letter-spacing:.05em;font-size:18px}.brand-subtitle{margin-top:5px;color:#64716d;font-size:12px;line-height:1.35}.admin-nav{display:grid;gap:10px}.admin-nav a{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:10px;color:#515d67;text-decoration:none;font-weight:600}.admin-nav a.is-active{background:#f2f6f4;color:var(--green-dark)}.admin-nav svg{width:23px;height:23px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}.ai-card{margin-top:auto;display:grid;grid-template-columns:46px 1fr 18px;gap:14px;align-items:center;padding:22px 18px;border:1px solid #dfe8e3;border-radius:10px;background:#fff;box-shadow:0 14px 28px rgba(31,43,39,.04);color:var(--green-dark);text-decoration:none}.ai-card strong{display:block;margin-bottom:7px}.ai-card span{color:#6b7774;line-height:1.35}.doctor-card{margin-top:120px;display:flex;align-items:center;gap:13px;padding:20px 12px;border:1px solid #dfe8e3;border-radius:10px;background:#fff}.doctor-avatar{width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#e9e0d8,#b8c8c2);font-size:31px}.doctor-name{font-weight:800;color:#394349}.doctor-role{color:#75807c;font-size:13px;line-height:1.25}.doctor-card svg{margin-left:auto;width:18px;height:18px;stroke:#51615c;fill:none}
         .admin-main{padding:54px 40px 34px;min-width:0}.admin-header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:36px}.admin-title h1{font-size:34px;line-height:1.1;margin:0 0 12px;color:#2e363d}.admin-title p{margin:0;color:#59636d;font-size:17px}.create-btn{display:inline-flex;align-items:center;gap:14px;padding:18px 24px;border-radius:7px;background:linear-gradient(135deg,var(--green-dark),#5b8f7f);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 12px 28px rgba(71,120,105,.2)}.create-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:2;fill:none}
-        .filters-card{display:grid;grid-template-columns:minmax(260px,1.8fr) 190px 230px 190px 210px;gap:28px;align-items:end;padding:32px 22px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;margin-bottom:20px}.filter-field{position:relative}.filter-field label{position:absolute;left:12px;top:-13px;background:#fff;padding:0 7px;color:#65716d;font-size:12px}.filter-control{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#46515a;font:inherit;padding:0 14px}.search-control{padding-left:56px}.search-icon{position:absolute;left:20px;bottom:15px;color:var(--green-dark)}.reset-filter{height:48px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#4e5963;font-weight:600;font:inherit;display:flex;align-items:center;justify-content:center;gap:12px}.reset-filter svg,.search-icon{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
+        .filters-actions-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}.filters-actions-row .filters-card{margin-bottom:0}.filters-card{display:grid;grid-template-columns:minmax(260px,1.8fr) 190px 230px 190px 210px;gap:28px;align-items:end;padding:32px 22px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;margin-bottom:20px}.filter-field{position:relative}.filter-field label{position:absolute;left:12px;top:-13px;background:#fff;padding:0 7px;color:#65716d;font-size:12px}.filter-control{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#46515a;font:inherit;padding:0 14px}.search-control{padding-left:56px}.search-icon{position:absolute;left:20px;bottom:15px;color:var(--green-dark)}.reset-filter{height:48px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#4e5963;font-weight:600;font:inherit;display:flex;align-items:center;justify-content:center;gap:12px}.reset-filter svg,.search-icon{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
         .questionnaire-table{border:1px solid #dfe6e2;border-radius:10px;background:#fff;overflow:hidden}.table-head,.table-row{display:grid;grid-template-columns:2.15fr 1.18fr .92fr 1.22fr 1.22fr .86fr 1.12fr;align-items:center;column-gap:24px}.table-head{padding:0 22px;height:58px;color:#303b45;font-size:13px;font-weight:800}.table-row{min-height:122px;padding:0 22px;border-top:1px solid #e7ece9}.survey-name{display:grid;grid-template-columns:60px 1fr;gap:24px;align-items:center;min-width:0}.survey-icon{width:60px;height:60px;border-radius:9px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark)}.survey-icon .icon-svg{width:36px;height:36px}.survey-icon.purple{background:#f0eafa;color:#7455c7}.survey-icon.blue{background:#edf8ff;color:#1687d9}.survey-icon.violet{background:#f4eef8;color:#805bb7}.survey-icon.amber{background:#fff6e0;color:#b98900}.survey-icon.rose{background:#fff0f2;color:#bd5c72}.survey-icon.orange{background:#fff3e9;color:#c66f27}.survey-title{font-weight:800;color:#25303a;margin-bottom:7px;line-height:1.35}.survey-summary,.table-muted{color:#5e6974;line-height:1.55}.status-pill{display:inline-flex;align-items:center;gap:8px;border-radius:6px;padding:8px 11px;font-weight:800;font-size:13px}.status-pill:before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor}.status-active{background:#e9f4ef;color:#3b806e}.status-draft{background:#fff6df;color:#b98500}.status-archive{background:#f0f2f3;color:#77808a}.responses-count{color:var(--green-dark);font-weight:700}.actions-cell{display:flex;gap:16px;justify-content:flex-end}.icon-button{width:52px;height:52px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;display:grid;place-items:center;color:#28333c;text-decoration:none;cursor:pointer}.icon-button:disabled{cursor:not-allowed;opacity:.55}.icon-button.is-copied{border-color:var(--green-dark);background:#edf5f1;color:var(--green-dark);opacity:1}.copy-success-mark{font-size:24px;font-weight:900;line-height:1}.icon-button svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.sort-mark{color:var(--green-dark);font-size:18px;margin-left:8px}.table-footer{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px 12px;color:#66716c}.pagination{display:flex;align-items:center;gap:16px}.page-btn,.page-number{width:40px;height:40px;border:1px solid transparent;background:#fff;border-radius:8px;display:grid;place-items:center;color:#26323a;text-decoration:none}.page-btn{border-color:#dfe6e2}.page-number.is-current{border-color:var(--green-dark);color:var(--green-dark)}.per-page{display:flex;align-items:center;gap:14px}.per-page select{width:86px;height:46px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;padding:0 14px;color:#59636d}
         .responses-header{margin-bottom:34px}.response-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:36px;margin-bottom:30px}.stat-card{min-height:92px;border:1px solid #dfe6e2;border-radius:10px;background:#fff;display:flex;align-items:center;gap:20px;padding:20px 28px}.stat-card span{width:58px;height:58px;border-radius:8px;display:grid;place-items:center;background:#edf5f1;color:var(--green-dark);flex:0 0 auto}.stat-card .icon-svg{width:30px;height:30px}.stat-card strong{display:block;font-size:26px;line-height:1;color:#2c3540;margin-bottom:9px}.stat-card p{margin:0;color:#5f6974}.stat-blue span{background:#eef8ff;color:#1477d4}.stat-amber span{background:#fff7e5;color:#df9d05}.responses-table .table-head,.responses-table .table-row{grid-template-columns:1.45fr 1.45fr 1.15fr .85fr .9fr .55fr .45fr .58fr}.responses-table .table-row{min-height:84px}.patient-name{display:grid;grid-template-columns:44px 1fr;gap:16px;align-items:center;min-width:0}.patient-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#edf1ef;overflow:hidden;font-size:13px;font-weight:900;color:var(--green-dark)}.response-pill{display:inline-flex;border-radius:6px;padding:7px 10px;font-weight:800;font-size:12px}.response-completed{background:#e4f0eb;color:#2f806d}.response-in_work{background:#e7f2ff;color:#1c67bf}.response-processed{background:#e6fbff;color:#008fb0}.response-progress{background:#e7f2ff;color:#1c67bf}.response-draft{background:#edf0f2;color:#606a74}.progress-cell{display:grid;gap:10px;align-content:center}.progress-cell strong{font-size:15px;color:#2d3741}.mini-progress{display:block;width:150px;max-width:100%;height:5px;border-radius:999px;background:#e1e6e9;overflow:hidden}.mini-progress i{display:block;height:100%;border-radius:inherit;background:var(--green-dark)}
         .view-main{padding-top:46px}.breadcrumbs{display:flex;align-items:center;gap:12px;margin-bottom:22px;color:#66716c;font-size:14px}.breadcrumbs a{color:#66716c;text-decoration:none}.view-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:28px}.view-title h1{margin:0 0 16px;font-size:34px;line-height:1.1;color:#2e363d}.view-meta{display:flex;align-items:center;gap:24px;flex-wrap:wrap;color:#59636d}.view-meta span{display:inline-flex;align-items:center;gap:8px}.view-status,.ai-generated{display:inline-flex;align-items:center;border-radius:999px;padding:8px 14px;background:#e4f0eb;color:#2f806d;font-size:12px;font-weight:800}.view-actions{display:flex;gap:14px;align-items:center}.outline-btn,.more-btn{height:56px;border:1px solid #dfe6e2;border-radius:7px;background:#fff;color:#3e4b53;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:12px;padding:0 22px;font-weight:800}.outline-btn svg,.more-btn svg{width:20px;height:20px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}.more-btn{width:56px;padding:0}.view-grid{display:grid;grid-template-columns:minmax(360px,.9fr) minmax(520px,1.1fr);gap:24px}.view-card{border:1px solid #dfe6e2;border-radius:12px;background:#fff;padding:22px;box-shadow:0 12px 30px rgba(40,55,50,.035)}.view-card h2{margin:0 0 20px;color:#25303a;font-size:20px}.answer-section{border:1px solid #dfe6e2;border-radius:9px;padding:16px 18px;margin-bottom:12px}.answer-section h3{margin:0 0 14px;display:flex;align-items:center;gap:12px;color:var(--green-dark);font-size:14px;text-transform:uppercase}.answer-section h3 span{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;background:var(--green-dark);color:#fff;font-size:13px}.answer-row{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:6px 0;color:#334049}.answer-row small{color:#53605d;font-weight:700}.answer-section p{margin:8px 0;color:#334049;line-height:1.55}.answer-table{width:100%;border-collapse:collapse;font-size:13px}.answer-table th,.answer-table td{padding:9px 4px;border-bottom:1px solid #edf1ef;text-align:left}.answer-table th{color:#53605d}.show-all{width:100%;height:52px;border:1px solid #dfe6e2;border-radius:8px;background:#fff;color:#25303a;font-weight:800}.ai-card-view{padding:0;overflow:hidden}.ai-panel{padding:24px 28px;border:1px solid #dfe6e2;border-radius:9px;margin-bottom:18px;line-height:1.7}.ai-panel h3,.editor-title{margin:0 0 14px;color:var(--green-dark);font-size:16px}.ai-panel ul,.ai-panel ol,.editor-content ul,.editor-content ol{margin:8px 0 22px 20px;padding:0}.ai-panel li,.editor-content li{margin:8px 0}.editor-box{border:1px solid #dfe6e2;border-radius:9px;overflow:hidden}.editor-toolbar{display:flex;gap:4px;align-items:center;height:44px;border-bottom:1px solid #dfe6e2;background:#fbfcfb;padding:0 12px;color:#4c5962}.tool{width:28px;height:28px;display:grid;place-items:center;border-radius:5px;font-weight:800}.editor-content{padding:18px 22px;line-height:1.65;min-height:430px}.char-count{text-align:right;color:#7c8783;font-size:12px;margin-top:8px}.save-note{margin-top:18px;border-radius:8px;background:#edf5f1;color:var(--green-dark);padding:15px 18px}.history-card{margin-top:24px}.history-row{display:grid;grid-template-columns:150px 1fr;gap:16px;margin:12px 0;color:#59636d}.history-card .outline-btn{height:42px;float:right;margin-top:-50px}
@@ -3755,6 +3890,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 <div class="view-meta"><span>♙ <?= e($response['patient_display'] ?? response_full_name($patient)) ?></span><span>⊙ <?= e($response['meta']) ?></span><span>Заполнено: <?= e($response['date']) ?></span></div>
             </div>
             <div class="view-actions">
+                <?php if (!response_has_ai_analysis($response)): ?><button class="outline-btn" type="button" id="regenerateAiBtn">Пересоздать ИИ</button><?php endif; ?>
                 <button class="outline-btn" type="button" id="markProcessedBtn">✓ Обработана</button>
                 <a class="outline-btn" id="createPdfBtn" href="?action=download_response_pdf&amp;id=<?= e($response['id'] ?? '') ?>"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Скачать PDF</a>
                 <button class="create-btn" type="button" id="saveAiAnswerBtn"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z"/></svg>Сохранить ИИ-ответ</button>
@@ -3811,7 +3947,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         <header class="admin-header responses-header">
             <div class="admin-title"><h1>Ответы пациентов</h1></div>
         </header>
-        <form class="filters-card" method="get" style="grid-template-columns:260px 140px"><input type="hidden" name="page" value="responses"><div class="filter-field"><label>Статус</label><select class="filter-control" name="status"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>Все анкеты</option><option value="in_work" <?= $statusFilter === 'in_work' ? 'selected' : '' ?>>В работе</option><option value="processed" <?= $statusFilter === 'processed' ? 'selected' : '' ?>>Обработанные</option></select></div><button class="reset-filter" type="submit">Показать</button></form>
+        <div class="filters-actions-row"><form class="filters-card" method="get" style="grid-template-columns:260px 140px"><input type="hidden" name="page" value="responses"><div class="filter-field"><label>Статус</label><select class="filter-control" name="status"><option value="all" <?= $statusFilter === 'all' ? 'selected' : '' ?>>Все анкеты</option><option value="in_work" <?= $statusFilter === 'in_work' ? 'selected' : '' ?>>В работе</option><option value="processed" <?= $statusFilter === 'processed' ? 'selected' : '' ?>>Обработанные</option></select></div><button class="reset-filter" type="submit">Показать</button></form><button class="create-btn" type="button" id="bulkCreateRnovaTasksBtn">Обойти задачи с нет</button><span class="hint-status" id="bulkCreateRnovaTasksStatus" aria-live="polite"></span></div>
         <section class="response-stats" aria-label="Сводка ответов">
             <article class="stat-card stat-green"><span><?= icon_svg('<path d="M9 5h9v16H6V5h3Z"/><path d="M9 5a3 3 0 0 1 6 0H9Z"/><path d="M9 11h6M9 15h6"/>') ?></span><div><strong><?= e($totalResponses) ?></strong><p>Всего ответов</p></div></article>
             <article class="stat-card stat-blue"><span><?= icon_svg('<path d="M16 21v-2a4 4 0 0 0-8 0v2"/><path d="M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path d="M20 21v-2a3 3 0 0 0-2-2.8"/><path d="M18 4.2a3 3 0 0 1 0 5.6"/>') ?></span><div><strong><?= e($uniquePatients) ?></strong><p>Пациент</p></div></article>
@@ -4328,6 +4464,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         const params = new URLSearchParams(location.search);
         const responseId = params.get('id') || '';
         const markProcessedBtn = document.getElementById('markProcessedBtn');
+        const regenerateAiBtn = document.getElementById('regenerateAiBtn');
         const createPdfBtn = document.getElementById('createPdfBtn');
 
         function updateCount() {
@@ -4378,7 +4515,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 const data = await res.json();
                 if (!data.ok) throw new Error(data.message || data.error || 'Ошибка операции');
                 if (saveStatus) saveStatus.textContent = data.message || 'Готово.';
-                if (action === 'mark_processed') setTimeout(() => location.reload(), 500);
+                if (action === 'mark_processed' || action === 'regenerate_ai_answer') setTimeout(() => location.reload(), 500);
             } catch (err) {
                 if (saveStatus) saveStatus.textContent = err.message || 'Ошибка операции';
             } finally {
@@ -4387,6 +4524,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             }
         }
         markProcessedBtn?.addEventListener('click', () => postResponseAction('mark_processed', markProcessedBtn, 'Отправляем в МИС...'));
+        regenerateAiBtn?.addEventListener('click', () => postResponseAction('regenerate_ai_answer', regenerateAiBtn, 'Создаём ИИ...'));
         function downloadBlob(blob, filename) {
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
@@ -4446,6 +4584,29 @@ $sections = apply_hint_config($sections, $hintConfig);
             const data = await res.json();
             if (data.ok) location.reload(); else alert(data.message || data.error || 'Не удалось удалить ответ');
         });
+    });
+
+    const bulkCreateRnovaTasksBtn = document.getElementById('bulkCreateRnovaTasksBtn');
+    const bulkCreateRnovaTasksStatus = document.getElementById('bulkCreateRnovaTasksStatus');
+    bulkCreateRnovaTasksBtn?.addEventListener('click', async () => {
+        const old = bulkCreateRnovaTasksBtn.textContent;
+        bulkCreateRnovaTasksBtn.disabled = true;
+        bulkCreateRnovaTasksBtn.textContent = 'Создаём задачи...';
+        if (bulkCreateRnovaTasksStatus) bulkCreateRnovaTasksStatus.textContent = '';
+        const fd = new FormData();
+        fd.append('action', 'bulk_create_rnova_tasks');
+        try {
+            const res = await fetch(location.href, {method: 'POST', body: fd, headers: {'X-Requested-With': 'fetch'}});
+            const data = await res.json();
+            if (!data.ok && data.errors?.length) throw new Error(data.message + ' ' + data.errors.slice(0, 3).join('; '));
+            if (bulkCreateRnovaTasksStatus) bulkCreateRnovaTasksStatus.textContent = data.message || 'Готово.';
+            setTimeout(() => location.reload(), 800);
+        } catch (err) {
+            if (bulkCreateRnovaTasksStatus) bulkCreateRnovaTasksStatus.textContent = err.message || 'Не удалось создать задачи RNOVA.';
+        } finally {
+            bulkCreateRnovaTasksBtn.disabled = false;
+            bulkCreateRnovaTasksBtn.textContent = old;
+        }
     });
 
     initHintsEditor();
