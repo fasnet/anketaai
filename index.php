@@ -2761,6 +2761,17 @@ function rnova_request($method, $path, $payload = null) {
     if (!$ok) {
         $desc = is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
         $error = $desc ? ('RNOVA: ' . $desc) : ('RNOVA вернула HTTP ' . $http);
+        if (mb_stripos((string)$error, 'обязательн', 0, 'UTF-8') !== false) {
+            $missing = rnova_payload_missing_fields($path, $payload);
+            if ($missing) {
+                $error .= '. Не указаны обязательные параметры: ' . implode(', ', $missing) . '.';
+            } else {
+                $required = rnova_required_payload_field_labels($path);
+                if ($required) {
+                    $error .= '. Обязательные параметры метода: ' . implode(', ', $required) . '.';
+                }
+            }
+        }
     }
     return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? ($data['data'] ?? $data) : [], 'raw' => $raw, 'error' => $error];
 }
@@ -2788,6 +2799,45 @@ function rnova_gender($sex) {
 
 function rnova_filter_payload($payload) {
     return array_filter($payload, static fn($value) => trim((string)$value) !== '');
+}
+
+function rnova_required_payload_fields($path) {
+    $methodName = trim((string)$path, '/');
+    if (str_contains($methodName, '?')) {
+        [$methodName] = explode('?', $methodName, 2);
+    }
+    $requiredByMethod = [
+        'createPatient' => [
+            'last_name' => 'фамилия (last_name)',
+            'first_name' => 'имя (first_name)',
+            'birth_date' => 'дата рождения (birth_date)',
+        ],
+        'createTask' => [
+            'role_id' => 'роль исполнителя (role_id)',
+            'user_id' => 'сотрудник-исполнитель (user_id)',
+            'title' => 'заголовок задачи (title)',
+            'desc' => 'описание задачи (desc)',
+            'patient_id' => 'ID пациента (patient_id)',
+            'due_date' => 'срок задачи (due_date)',
+        ],
+    ];
+    return $requiredByMethod[$methodName] ?? [];
+}
+
+function rnova_required_payload_field_labels($path) {
+    return array_values(rnova_required_payload_fields($path));
+}
+
+function rnova_payload_missing_fields($path, $payload) {
+    $required = rnova_required_payload_fields($path);
+    $missing = [];
+    foreach ($required as $key => $label) {
+        $value = $payload[$key] ?? '';
+        if (trim((string)$value) === '' || (in_array($key, ['role_id', 'user_id', 'patient_id'], true) && (int)$value <= 0)) {
+            $missing[] = $label;
+        }
+    }
+    return $missing;
 }
 
 function rnova_required_patient_fields_missing($patient) {
@@ -2894,14 +2944,19 @@ function create_rnova_task_for_response($response) {
     $patientId = $patientResult['patient_id'];
     $responseUrl = app_base_url() . '?page=response-view&id=' . rawurlencode((string)($response['id'] ?? ''));
     $due = (new DateTimeImmutable('+2 days'))->format('Y-m-d');
-    $task = rnova_request('POST', 'createTask', [
+    $taskPayload = [
         'role_id' => (int)rnova_config('RNOVA_ADMIN_ROLE_ID', (string)RNOVA_ADMIN_ROLE_ID),
         'user_id' => (int)rnova_config('RNOVA_EMPLOYEE_ID', (string)RNOVA_EMPLOYEE_ID),
         'title' => 'Анализ анкеты ' . ($response['survey'] ?? ''),
         'desc' => $responseUrl,
         'patient_id' => $patientId,
         'due_date' => rnova_date($due),
-    ]);
+    ];
+    $missingTaskFields = rnova_payload_missing_fields('createTask', $taskPayload);
+    if ($missingTaskFields) {
+        return ['ok' => false, 'error' => 'Для создания задачи RNOVA не заполнены обязательные параметры: ' . implode(', ', $missingTaskFields) . '.'];
+    }
+    $task = rnova_request('POST', 'createTask', $taskPayload);
     if (!$task['ok']) return $task;
     $taskId = rnova_response_id($task['data'] ?? []);
     if (!$taskId) {
