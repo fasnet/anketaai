@@ -2721,6 +2721,34 @@ function rnova_response_id($data) {
     return null;
 }
 
+function rnova_execute_request($url, $form, $asMultipart = false) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_POSTFIELDS => $asMultipart ? $form : http_build_query($form),
+        CURLOPT_TIMEOUT => 60,
+    ]);
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return [$raw, $err, $http];
+}
+
+function rnova_response_error_desc($data) {
+    return is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
+}
+
+function rnova_result_has_required_error($data, $http) {
+    $apiError = is_array($data) ? (int)($data['error'] ?? 0) : 0;
+    if ($http < 200 || $http >= 300 || $apiError !== 0) {
+        return mb_stripos((string)rnova_response_error_desc($data), 'обязательн', 0, 'UTF-8') !== false;
+    }
+    return false;
+}
+
 function rnova_request($method, $path, $payload = null) {
     $apiUrl = rnova_config('RNOVA_API_URL', RNOVA_API_URL);
     $apiToken = rnova_config('RNOVA_API_TOKEN', RNOVA_API_TOKEN);
@@ -2741,25 +2769,39 @@ function rnova_request($method, $path, $payload = null) {
     $form = array_merge($query, $payload, ['api_key' => $apiToken]);
     $url = rtrim($apiUrl, '/') . '/' . ltrim($methodName, '/');
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json'],
-        CURLOPT_POSTFIELDS => http_build_query($form),
-        CURLOPT_TIMEOUT => 60,
-    ]);
-    $raw = curl_exec($ch);
-    $err = curl_error($ch);
-    $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    [$raw, $err, $http] = rnova_execute_request($url, $form, false);
     if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
     $data = json_decode((string)$raw, true);
+    $originalRnovaError = rnova_response_error_desc($data);
+
+    // Some RNOVA installations do not parse application/x-www-form-urlencoded
+    // bodies consistently and answer that required fields are missing although
+    // they were sent. Retry once as multipart/form-data before surfacing the
+    // error to the user.
+    if (rnova_result_has_required_error($data, $http) && !rnova_payload_missing_fields($path, $payload)) {
+        [$retryRaw, $retryErr, $retryHttp] = rnova_execute_request($url, $form, true);
+        if ($retryRaw === false) {
+            $retryError = 'Ошибка RNOVA: ' . $retryErr;
+            if ($originalRnovaError) {
+                $retryError .= '. Оригинальная ошибка RNOVA: ' . $originalRnovaError . '.';
+            }
+            return [
+                'ok' => false,
+                'error' => $retryError,
+                'rnova_error' => null,
+                'original_rnova_error' => $originalRnovaError,
+            ];
+        }
+        $raw = $retryRaw;
+        $http = $retryHttp;
+        $data = json_decode((string)$raw, true);
+    }
+
     $apiError = is_array($data) ? (int)($data['error'] ?? 0) : 0;
     $ok = $http >= 200 && $http < 300 && $apiError === 0;
     $error = null;
     if (!$ok) {
-        $desc = is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
+        $desc = rnova_response_error_desc($data);
         $error = $desc ? ('RNOVA: ' . $desc) : ('RNOVA вернула HTTP ' . $http);
         if (mb_stripos((string)$error, 'обязательн', 0, 'UTF-8') !== false) {
             $missing = rnova_payload_missing_fields($path, $payload);
@@ -2768,12 +2810,23 @@ function rnova_request($method, $path, $payload = null) {
             } else {
                 $required = rnova_required_payload_field_labels($path);
                 if ($required) {
-                    $error .= '. Обязательные параметры метода: ' . implode(', ', $required) . '.';
+                    $error .= '. Параметры были отправлены приложением; RNOVA не распознала их. Обязательные параметры метода: ' . implode(', ', $required) . '.';
                 }
             }
         }
+        if ($originalRnovaError) {
+            $error .= ' Оригинальная ошибка RNOVA: ' . $originalRnovaError . '.';
+        }
     }
-    return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? ($data['data'] ?? $data) : [], 'raw' => $raw, 'error' => $error];
+    return [
+        'ok' => $ok,
+        'http' => $http,
+        'data' => is_array($data) ? ($data['data'] ?? $data) : [],
+        'raw' => $raw,
+        'error' => $error,
+        'rnova_error' => rnova_response_error_desc($data),
+        'original_rnova_error' => $originalRnovaError,
+    ];
 }
 
 function rnova_date($date) {
