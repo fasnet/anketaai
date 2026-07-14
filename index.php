@@ -2737,11 +2737,14 @@ function rnova_execute_request($url, $form, $asMultipart = false) {
     return [$raw, $err, $http];
 }
 
+function rnova_response_error_desc($data) {
+    return is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
+}
+
 function rnova_result_has_required_error($data, $http) {
     $apiError = is_array($data) ? (int)($data['error'] ?? 0) : 0;
     if ($http < 200 || $http >= 300 || $apiError !== 0) {
-        $desc = is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
-        return mb_stripos((string)$desc, 'обязательн', 0, 'UTF-8') !== false;
+        return mb_stripos((string)rnova_response_error_desc($data), 'обязательн', 0, 'UTF-8') !== false;
     }
     return false;
 }
@@ -2769,6 +2772,7 @@ function rnova_request($method, $path, $payload = null) {
     [$raw, $err, $http] = rnova_execute_request($url, $form, false);
     if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
     $data = json_decode((string)$raw, true);
+    $originalRnovaError = rnova_response_error_desc($data);
 
     // Some RNOVA installations do not parse application/x-www-form-urlencoded
     // bodies consistently and answer that required fields are missing although
@@ -2786,7 +2790,7 @@ function rnova_request($method, $path, $payload = null) {
     $ok = $http >= 200 && $http < 300 && $apiError === 0;
     $error = null;
     if (!$ok) {
-        $desc = is_array($data) ? ($data['data']['desc'] ?? $data['desc'] ?? null) : null;
+        $desc = rnova_response_error_desc($data);
         $error = $desc ? ('RNOVA: ' . $desc) : ('RNOVA вернула HTTP ' . $http);
         if (mb_stripos((string)$error, 'обязательн', 0, 'UTF-8') !== false) {
             $missing = rnova_payload_missing_fields($path, $payload);
@@ -2799,8 +2803,19 @@ function rnova_request($method, $path, $payload = null) {
                 }
             }
         }
+        if ($originalRnovaError && $originalRnovaError !== $desc) {
+            $error .= ' Оригинальная ошибка RNOVA: ' . $originalRnovaError . '.';
+        }
     }
-    return ['ok' => $ok, 'http' => $http, 'data' => is_array($data) ? ($data['data'] ?? $data) : [], 'raw' => $raw, 'error' => $error];
+    return [
+        'ok' => $ok,
+        'http' => $http,
+        'data' => is_array($data) ? ($data['data'] ?? $data) : [],
+        'raw' => $raw,
+        'error' => $error,
+        'rnova_error' => rnova_response_error_desc($data),
+        'original_rnova_error' => $originalRnovaError,
+    ];
 }
 
 function rnova_date($date) {
