@@ -2780,7 +2780,18 @@ function rnova_request($method, $path, $payload = null) {
     // error to the user.
     if (rnova_result_has_required_error($data, $http) && !rnova_payload_missing_fields($path, $payload)) {
         [$retryRaw, $retryErr, $retryHttp] = rnova_execute_request($url, $form, true);
-        if ($retryRaw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $retryErr];
+        if ($retryRaw === false) {
+            $retryError = 'Ошибка RNOVA: ' . $retryErr;
+            if ($originalRnovaError) {
+                $retryError .= '. Оригинальная ошибка RNOVA: ' . $originalRnovaError . '.';
+            }
+            return [
+                'ok' => false,
+                'error' => $retryError,
+                'rnova_error' => null,
+                'original_rnova_error' => $originalRnovaError,
+            ];
+        }
         $raw = $retryRaw;
         $http = $retryHttp;
         $data = json_decode((string)$raw, true);
@@ -2803,7 +2814,7 @@ function rnova_request($method, $path, $payload = null) {
                 }
             }
         }
-        if ($originalRnovaError && $originalRnovaError !== $desc) {
+        if ($originalRnovaError) {
             $error .= ' Оригинальная ошибка RNOVA: ' . $originalRnovaError . '.';
         }
     }
