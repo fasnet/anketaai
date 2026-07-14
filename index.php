@@ -2769,6 +2769,7 @@ function rnova_request($method, $path, $payload = null) {
     $form = array_merge($query, $payload, ['api_key' => $apiToken]);
     $url = rtrim($apiUrl, '/') . '/' . ltrim($methodName, '/');
 
+    $transport = 'application/x-www-form-urlencoded';
     [$raw, $err, $http] = rnova_execute_request($url, $form, false);
     if ($raw === false) return ['ok' => false, 'error' => 'Ошибка RNOVA: ' . $err];
     $data = json_decode((string)$raw, true);
@@ -2795,6 +2796,7 @@ function rnova_request($method, $path, $payload = null) {
         $raw = $retryRaw;
         $http = $retryHttp;
         $data = json_decode((string)$raw, true);
+        $transport = 'multipart/form-data (повтор после ошибки обязательных параметров при application/x-www-form-urlencoded)';
     }
 
     $apiError = is_array($data) ? (int)($data['error'] ?? 0) : 0;
@@ -2806,11 +2808,11 @@ function rnova_request($method, $path, $payload = null) {
         if (mb_stripos((string)$error, 'обязательн', 0, 'UTF-8') !== false) {
             $missing = rnova_payload_missing_fields($path, $payload);
             if ($missing) {
-                $error .= '. Не указаны обязательные параметры: ' . implode(', ', $missing) . '.';
+                $error .= '. Не указаны обязательные параметры: ' . implode(', ', $missing) . '. ' . rnova_payload_debug_summary($path, $payload, $transport);
             } else {
                 $required = rnova_required_payload_field_labels($path);
                 if ($required) {
-                    $error .= '. Параметры были отправлены приложением; RNOVA не распознала их. Обязательные параметры метода: ' . implode(', ', $required) . '.';
+                    $error .= '. Параметры были отправлены приложением; RNOVA не распознала их. ' . rnova_payload_debug_summary($path, $payload, $transport);
                 }
             }
         }
@@ -2852,6 +2854,37 @@ function rnova_gender($sex) {
 
 function rnova_filter_payload($payload) {
     return array_filter($payload, static fn($value) => trim((string)$value) !== '');
+}
+
+
+function rnova_payload_debug_summary($path, $payload, $transport = null) {
+    $methodName = trim((string)$path, '/');
+    if (str_contains($methodName, '?')) {
+        [$methodName] = explode('?', $methodName, 2);
+    }
+    $payload = is_array($payload) ? $payload : [];
+    $parts = [];
+    foreach ($payload as $key => $value) {
+        if ($key === 'api_key') continue;
+        if (is_array($value)) {
+            $value = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+        $value = trim((string)$value);
+        if ($value === '') {
+            $value = '(пусто)';
+        }
+        $parts[] = $key . '=' . $value;
+    }
+    $summary = 'Метод RNOVA: ' . ($methodName !== '' ? $methodName : trim((string)$path, '/')) . '.';
+    $required = rnova_required_payload_field_labels($path);
+    if ($required) {
+        $summary .= ' Обязательные параметры метода: ' . implode(', ', $required) . '.';
+    }
+    if ($transport) {
+        $summary .= ' Как отправляли: POST, ' . $transport . '.';
+    }
+    $summary .= ' Отправленные параметры: ' . ($parts ? implode(', ', $parts) : 'нет параметров') . '.';
+    return $summary;
 }
 
 function rnova_required_payload_fields($path) {
