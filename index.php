@@ -625,6 +625,25 @@ function prodamus_signature($data, $secretKey) {
     return base64_encode(hash_hmac('sha256', $json, (string)$secretKey, true));
 }
 
+
+function normalize_russian_phone($phone) {
+    $raw = trim((string)$phone);
+    $digits = preg_replace('/\D+/', '', $raw) ?? '';
+    if (strlen($digits) === 11 && $digits[0] === '8') {
+        $digits = '7' . substr($digits, 1);
+    } elseif (strlen($digits) === 10) {
+        $digits = '7' . $digits;
+    } elseif (strlen($digits) > 11 && str_starts_with($digits, '7')) {
+        $digits = substr($digits, 0, 11);
+    }
+    return (strlen($digits) === 11 && $digits[0] === '7') ? ('+' . $digits) : $raw;
+}
+
+function is_valid_russian_phone($phone) {
+    $digits = preg_replace('/\D+/', '', normalize_russian_phone($phone)) ?? '';
+    return strlen($digits) === 11 && $digits[0] === '7';
+}
+
 function is_payment_required() {
     return questionnaire_price() > 0;
 }
@@ -637,7 +656,7 @@ function prodamus_payment_url($orderId, $patient) {
     $formUrl = $baseUrl . '?page=form' . ($questionnaireId !== '' ? '&qid=' . rawurlencode($questionnaireId) : '');
     $data = [
         'order_id' => (string)$orderId,
-        'customer_phone' => trim((string)($patient['phone'] ?? '')),
+        'customer_phone' => normalize_russian_phone($patient['phone'] ?? ''),
         'customer_email' => trim((string)($patient['email'] ?? '')),
         'customer_extra' => 'Оплата анализа анкеты здоровья',
         'do' => 'pay',
@@ -2950,7 +2969,7 @@ function rnova_patient_payload($patient, $includeMobile = true) {
         'first_name' => $firstName,
         'third_name' => $thirdName,
         'birth_date' => rnova_date($patient['dob'] ?? ''),
-        'mobile' => $includeMobile ? trim((string)($patient['phone'] ?? '')) : '',
+        'mobile' => $includeMobile ? normalize_russian_phone($patient['phone'] ?? '') : '',
         'email' => trim((string)($patient['email'] ?? '')),
         'gender' => rnova_gender($patient['sex'] ?? ''),
     ]);
@@ -3501,12 +3520,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
         exit;
     }
 
+    $phone = normalize_russian_phone(postv('phone'));
+    if (!is_valid_russian_phone($phone)) {
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Введите телефон в формате +7 (___) ___-__-__.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
     $patient = [
         'surname' => $surname,
         'name' => $name,
         'patronymic' => $patronymic,
         'dob' => $dob,
-        'phone' => trim((string)postv('phone')),
+        'phone' => $phone,
         'email' => trim((string)postv('email')),
         'sex' => trim((string)postv('sex')),
         'height' => trim((string)postv('height')),
@@ -4285,7 +4313,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     </div>
                     <div class="question">
                         <div class="question-label">Телефон</div>
-                        <input class="field" type="tel" name="phone" required>
+                        <input class="field" type="tel" name="phone" value="+7 (" placeholder="+7 (___) ___-__-__" inputmode="tel" autocomplete="tel" maxlength="18" pattern="^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$" title="Введите телефон в формате +7 (___) ___-__-__" required>
                     </div>
                     <div class="question">
                         <div class="question-label">E-mail</div>
@@ -4614,6 +4642,37 @@ $sections = apply_hint_config($sections, $hintConfig);
         const maleSection = document.querySelector('[data-sex-section="male"]');
         const progressText = document.getElementById('progressText');
         const progressFill = document.getElementById('progressFill');
+
+        const phoneInput = form.querySelector('input[name="phone"]');
+        function formatRussianPhone(value) {
+            let digits = String(value || '').replace(/\D/g, '');
+            if (digits.startsWith('8')) digits = '7' + digits.slice(1);
+            if (digits.startsWith('7')) digits = digits.slice(1);
+            digits = digits.slice(0, 10);
+            let result = '+7 (';
+            if (digits.length > 0) result += digits.slice(0, 3);
+            if (digits.length >= 3) result += ') ';
+            if (digits.length > 3) result += digits.slice(3, 6);
+            if (digits.length >= 6) result += '-';
+            if (digits.length > 6) result += digits.slice(6, 8);
+            if (digits.length >= 8) result += '-';
+            if (digits.length > 8) result += digits.slice(8, 10);
+            return result;
+        }
+        if (phoneInput) {
+            phoneInput.value = formatRussianPhone(phoneInput.value);
+            phoneInput.addEventListener('input', () => {
+                phoneInput.value = formatRussianPhone(phoneInput.value);
+                phoneInput.setSelectionRange(phoneInput.value.length, phoneInput.value.length);
+                updateProgress();
+            });
+            phoneInput.addEventListener('focus', () => {
+                if (!phoneInput.value.trim()) phoneInput.value = '+7 (';
+            });
+            phoneInput.addEventListener('blur', () => {
+                if (phoneInput.value === '+7 (') phoneInput.value = '';
+            });
+        }
 
         function namedCheckedCount(name) {
             return Array.from(form.elements).filter(field => field.name === name && field.checked).length;
