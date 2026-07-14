@@ -2915,6 +2915,7 @@ function rnova_required_payload_fields($path) {
         'createPatient' => [
             'last_name' => 'фамилия (last_name)',
             'first_name' => 'имя (first_name)',
+            'third_name' => 'отчество (third_name)',
             'birth_date' => 'дата рождения (birth_date)',
         ],
         'createTask' => [
@@ -2963,6 +2964,11 @@ function rnova_required_patient_fields_missing($patient) {
 function rnova_patient_payload($patient, $includeMobile = true) {
     $firstName = trim((string)($patient['name'] ?? ''));
     $thirdName = trim((string)($patient['patronymic'] ?? ''));
+    if ($thirdName === '') {
+        // RNOVA marks third_name as a required createPatient parameter.
+        // Use a neutral placeholder when the анкета has no patronymic.
+        $thirdName = '-';
+    }
 
     return rnova_filter_payload([
         'last_name' => trim((string)($patient['surname'] ?? '')),
