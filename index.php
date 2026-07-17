@@ -3162,16 +3162,40 @@ function create_rnova_task_for_response($response) {
     return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'task_id' => $taskId];
 }
 
+function rnova_task_record($data, $taskId) {
+    if (!is_array($data)) return null;
+    $recordId = trim((string)($data['id'] ?? $data['task_id'] ?? ''));
+    if ($recordId !== '' && $recordId === trim((string)$taskId) && trim((string)($data['patient_id'] ?? '')) !== '') {
+        return $data;
+    }
+    foreach ($data as $value) {
+        if (!is_array($value)) continue;
+        $record = rnova_task_record($value, $taskId);
+        if ($record) return $record;
+    }
+    return null;
+}
+
+function rnova_task_patient($taskId) {
+    $task = rnova_request('POST', 'getTasks', ['task_id' => $taskId]);
+    if (!$task['ok']) return $task;
+    $record = rnova_task_record($task['data'] ?? [], $taskId);
+    if (!$record) {
+        return ['ok' => false, 'error' => 'RNOVA не вернула задачу #' . $taskId . ' с привязанным пациентом.'];
+    }
+    return ['ok' => true, 'patient_id' => $record['patient_id'], 'task' => $record];
+}
+
 function attach_response_pdf_to_rnova_task($response) {
-    $patientResult = rnova_ensure_patient($response);
-    if (!$patientResult['ok']) return $patientResult;
-    $patientId = trim((string)($response['mis_patient_id'] ?? '')) !== ''
-        ? $response['mis_patient_id']
-        : $patientResult['patient_id'];
     $taskId = trim((string)($response['mis_task_id'] ?? ''));
     if ($taskId === '') {
         return ['ok' => false, 'error' => 'Для прикрепления PDF не найден ID текущей задачи RNOVA. Сначала создайте активную задачу.'];
     }
+    // Always resolve the patient from the current RNOVA task. Do not trust a
+    // locally stored patient ID and do not search for or create patients here.
+    $taskPatient = rnova_task_patient($taskId);
+    if (!$taskPatient['ok']) return $taskPatient;
+    $patientId = trim((string)$taskPatient['patient_id']);
     $pdf = simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты', response_pdf_patient_name($response), $response['patient']['sex'] ?? '');
     if (strlen($pdf) > 10 * 1024 * 1024) {
         return ['ok' => false, 'error' => 'PDF превышает максимальный размер файла RNOVA (10 МБ).'];
