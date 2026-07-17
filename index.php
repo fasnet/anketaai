@@ -4553,6 +4553,10 @@ $sections = apply_hint_config($sections, $hintConfig);
         }
     }
 
+    function emailDeliveryText(data) {
+        return data.email_sent ? ' Письмо-подтверждение отправлено.' : '';
+    }
+
     async function sendSurveyToAiAfterPayment() {
         const fd = readPendingSurveyFormData();
         if (!fd) {
@@ -4575,7 +4579,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             localStorage.removeItem(pendingSurveyStorageKey);
             openSuccessModal({
                 title: 'Анкета успешно отправлена и оплачена',
-                text: 'Спасибо! Оплата прошла успешно, анкета отправлена.' + (data.email_sent ? ' Письмо-подтверждение отправлено.' : '')
+                text: 'Спасибо! Оплата прошла успешно, анкета отправлена.' + emailDeliveryText(data)
             });
         } catch (err) {
             openSuccessModal({
@@ -4831,7 +4835,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
                 openSuccessModal({
                     title: 'Анкета успешно отправлена',
-                    text: 'Ваша анкета зарегистрирована в нашей системе. ' + emailDeliveryText(data)
+                    text: 'Ваша анкета зарегистрирована в нашей системе.' + emailDeliveryText(data)
                 });
                 if (result) {
                     result.innerHTML = '';
