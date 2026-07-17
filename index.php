@@ -59,19 +59,21 @@ function smtp_read_response($socket): string {
     return $response;
 }
 
-function smtp_command($socket, string $command, array $expectedCodes): bool {
+function smtp_command($socket, string $command, array $expectedCodes, string $stage, ?string &$error): bool {
     if ($command !== '') fwrite($socket, $command . "\r\n");
     $response = smtp_read_response($socket);
-    return in_array((int)substr($response, 0, 3), $expectedCodes, true);
+    if (in_array((int)substr($response, 0, 3), $expectedCodes, true)) return true;
+    $error = 'Ошибка SMTP на этапе «' . $stage . '»: ' . (trim($response) ?: 'сервер не ответил');
+    return false;
 }
 
-function send_via_yandex_smtp(string $to, string $subject, string $message): bool {
+function send_via_yandex_smtp(string $to, string $subject, string $message): array {
     $username = trim((string)getenv('YANDEX_SMTP_USERNAME'));
     $password = (string)getenv('YANDEX_SMTP_PASSWORD');
     $from = trim((string)(getenv('YANDEX_SMTP_FROM') ?: $username));
     if (!filter_var($username, FILTER_VALIDATE_EMAIL) || $password === '' || !filter_var($from, FILTER_VALIDATE_EMAIL)) {
         error_log('Yandex SMTP is not configured: set YANDEX_SMTP_USERNAME, YANDEX_SMTP_PASSWORD and optionally YANDEX_SMTP_FROM.');
-        return false;
+        return ['sent' => false, 'status' => 'error', 'error' => 'SMTP Яндекса не настроен на сервере.'];
     }
 
     $errorNumber = 0;
@@ -79,7 +81,7 @@ function send_via_yandex_smtp(string $to, string $subject, string $message): boo
     $socket = @stream_socket_client('ssl://smtp.yandex.ru:465', $errorNumber, $errorMessage, 15);
     if (!is_resource($socket)) {
         error_log('Yandex SMTP connection failed: ' . $errorMessage . ' (' . $errorNumber . ')');
-        return false;
+        return ['sent' => false, 'status' => 'error', 'error' => 'Не удалось подключиться к SMTP Яндекса: ' . ($errorMessage ?: 'ошибка соединения') . '.'];
     }
     stream_set_timeout($socket, 15);
 
@@ -100,23 +102,30 @@ function send_via_yandex_smtp(string $to, string $subject, string $message): boo
     $data = implode("\r\n", $headers) . "\r\n\r\n" . str_replace("\n", "\r\n", $body) . "\r\n.";
 
     $hostname = gethostname() ?: 'localhost';
-    $ok = smtp_command($socket, '', [220])
-        && smtp_command($socket, 'EHLO ' . $hostname, [250])
-        && smtp_command($socket, 'AUTH LOGIN', [334])
-        && smtp_command($socket, base64_encode($username), [334])
-        && smtp_command($socket, base64_encode($password), [235])
-        && smtp_command($socket, 'MAIL FROM:<' . $from . '>', [250])
-        && smtp_command($socket, 'RCPT TO:<' . $to . '>', [250, 251])
-        && smtp_command($socket, 'DATA', [354])
-        && smtp_command($socket, $data, [250]);
-    if ($ok) smtp_command($socket, 'QUIT', [221]);
+    $smtpError = null;
+    $ok = smtp_command($socket, '', [220], 'подключение', $smtpError)
+        && smtp_command($socket, 'EHLO ' . $hostname, [250], 'приветствие', $smtpError)
+        && smtp_command($socket, 'AUTH LOGIN', [334], 'начало авторизации', $smtpError)
+        && smtp_command($socket, base64_encode($username), [334], 'отправка логина', $smtpError)
+        && smtp_command($socket, base64_encode($password), [235], 'авторизация', $smtpError)
+        && smtp_command($socket, 'MAIL FROM:<' . $from . '>', [250], 'адрес отправителя', $smtpError)
+        && smtp_command($socket, 'RCPT TO:<' . $to . '>', [250, 251], 'адрес получателя', $smtpError)
+        && smtp_command($socket, 'DATA', [354], 'начало передачи письма', $smtpError)
+        && smtp_command($socket, $data, [250], 'отправка письма', $smtpError);
+    if ($ok) smtp_command($socket, 'QUIT', [221], 'завершение соединения', $smtpError);
     fclose($socket);
-    return $ok;
+    return [
+        'sent' => $ok,
+        'status' => $ok ? 'sent' : 'error',
+        'error' => $ok ? null : ($smtpError ?: 'Неизвестная ошибка SMTP.'),
+    ];
 }
 
-function send_patient_questionnaire_confirmation(array $patient): bool {
+function send_patient_questionnaire_confirmation(array $patient): array {
     $email = trim((string)($patient['email'] ?? ''));
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return false;
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return ['sent' => false, 'status' => 'error', 'error' => 'Некорректный адрес электронной почты.'];
+    }
 
     $recipientName = trim(implode(' ', array_filter([
         trim((string)($patient['name'] ?? '')),
@@ -126,6 +135,10 @@ function send_patient_questionnaire_confirmation(array $patient): bool {
         . 'Наши врачи внимательно изучат предоставленную информацию и перечень анализов будет направлен Вам '
         . 'на электронную почту не позднее чем через 3 дня.';
     return send_via_yandex_smtp($email, 'Анкета зарегистрирована', $message);
+}
+
+function skipped_email_result(): array {
+    return ['sent' => false, 'status' => 'skipped', 'error' => 'Письмо не отправлялось, потому что ответ анкеты не был сохранён.'];
 }
 
 
@@ -3623,11 +3636,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
     if (!response_has_medical_answers($readableAnswers)) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
-        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
+        $emailResult = $responseId ? send_patient_questionnaire_confirmation($patient) : skipped_email_result();
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Анкета успешно отправлена.' : 'Не удалось сохранить ответ в базе данных.',
-            'email_sent' => $emailSent,
+            'email_sent' => $emailResult['sent'],
+            'email_status' => $emailResult['status'],
+            'email_error' => $emailResult['error'],
             'rnova_task' => $rnovaTask,
             'warning' => 'VSEGPT не вызывался, потому что медицинские блоки анкеты пустые.',
             'response_id' => $responseId,
@@ -3702,12 +3717,14 @@ $userPayload = [
     if (!$api['ok']) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
-        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
+        $emailResult = $responseId ? send_patient_questionnaire_confirmation($patient) : skipped_email_result();
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'rnova_task' => $rnovaTask,
-            'email_sent' => $emailSent,
+            'email_sent' => $emailResult['sent'],
+            'email_status' => $emailResult['status'],
+            'email_error' => $emailResult['error'],
             'warning' => $api['error'],
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -3720,12 +3737,14 @@ $userPayload = [
     if (!is_array($decoded)) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
-        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
+        $emailResult = $responseId ? send_patient_questionnaire_confirmation($patient) : skipped_email_result();
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'rnova_task' => $rnovaTask,
-            'email_sent' => $emailSent,
+            'email_sent' => $emailResult['sent'],
+            'email_status' => $emailResult['status'],
+            'email_error' => $emailResult['error'],
             'warning' => 'VSEGPT вернул невалидный JSON.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -3747,12 +3766,14 @@ $userPayload = [
     $record['history'][] = ['date' => date('c'), 'event' => 'Сгенерировано ИИ'];
     $responseId = add_patient_response($record);
     $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
-    $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
+    $emailResult = $responseId ? send_patient_questionnaire_confirmation($patient) : skipped_email_result();
 
     echo json_encode([
         'ok' => (bool)$responseId,
         'rnova_task' => $rnovaTask,
-        'email_sent' => $emailSent,
+        'email_sent' => $emailResult['sent'],
+        'email_status' => $emailResult['status'],
+        'email_error' => $emailResult['error'],
         'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
         'response_id' => $responseId,
         'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -4532,6 +4553,12 @@ $sections = apply_hint_config($sections, $hintConfig);
         }
     }
 
+    function emailDeliveryText(data) {
+        if (data.email_sent) return 'Письмо-подтверждение отправлено.';
+        if (data.email_status === 'skipped') return data.email_error || 'Письмо-подтверждение не отправлялось.';
+        return 'Письмо-подтверждение не отправлено: ' + (data.email_error || 'неизвестная ошибка почтового сервера.');
+    }
+
     async function sendSurveyToAiAfterPayment() {
         const fd = readPendingSurveyFormData();
         if (!fd) {
@@ -4554,7 +4581,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             localStorage.removeItem(pendingSurveyStorageKey);
             openSuccessModal({
                 title: 'Анкета успешно отправлена и оплачена',
-                text: 'Спасибо! Оплата прошла успешно, анкета отправлена. Мы скоро свяжемся с вами.'
+                text: 'Спасибо! Оплата прошла успешно, анкета отправлена. ' + emailDeliveryText(data)
             });
         } catch (err) {
             openSuccessModal({
@@ -4810,7 +4837,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                 if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
                 openSuccessModal({
                     title: 'Анкета успешно отправлена',
-                    text: 'Ваша анкета зарегистрирована в нашей системе.'
+                    text: 'Ваша анкета зарегистрирована в нашей системе. ' + emailDeliveryText(data)
                 });
                 if (result) {
                     result.innerHTML = '';
