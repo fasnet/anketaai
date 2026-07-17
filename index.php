@@ -40,6 +40,32 @@ function postv($key, $default = '') {
     return $_POST[$key] ?? $default;
 }
 
+function send_patient_questionnaire_confirmation(array $patient): bool {
+    $email = trim((string)($patient['email'] ?? ''));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return false;
+
+    $recipientName = trim(implode(' ', array_filter([
+        trim((string)($patient['name'] ?? '')),
+        trim((string)($patient['patronymic'] ?? '')),
+    ], static fn($part) => $part !== '')));
+    $message = $recipientName . ', Ваша анкета зарегистрирована в нашей системе. '
+        . 'Наши врачи внимательно изучат предоставленную информацию и перечень анализов будет направлен Вам '
+        . 'на электронную почту не позднее чем через 3 дня.';
+    $subjectText = 'Анкета зарегистрирована';
+    $subject = function_exists('mb_encode_mimeheader')
+        ? mb_encode_mimeheader($subjectText, 'UTF-8', 'B', "\r\n")
+        : '=?UTF-8?B?' . base64_encode($subjectText) . '?=';
+    $headers = implode("\r\n", [
+        'From: Adaptogenzz Clinic <clinic@adaptogenzz.pro>',
+        'Reply-To: clinic@adaptogenzz.pro',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+    ]);
+
+    return mail($email, $subject, $message, $headers);
+}
+
 
 function db() {
     static $pdo = null;
@@ -1284,30 +1310,8 @@ function section_clean_title($title) {
 }
 
 function section_meta($index, $section) {
-    $summaries = [
-        1 => 'ФИО, дата рождения, пол, рост, вес и др.',
-        2 => 'Как вы оцениваете состояние своего здоровья?',
-        3 => 'Какая основная цель вашего визита?',
-        4 => 'Симптомы, длительность, выраженность и др.',
-        5 => 'Беспокоит ли вас: ухудшение памяти, зрения и др.',
-        6 => 'Аппетит, стул, боли в животе и др.',
-        7 => 'Одышка, кашель, затруднение дыхания и др.',
-        8 => 'Объём жидкости, состояние кожи и др.',
-        9 => 'Качество сна, засыпание, пробуждение и др.',
-        10 => 'Настроение, стресс, привычки и др.',
-        11 => 'Локализация и характер боли.',
-        12 => 'Травмы и операции.',
-        13 => 'Аллергические реакции.',
-        14 => 'Лекарства и БАДы.',
-        15 => 'Наблюдение у специалистов и диагнозы.',
-        16 => 'Семейный анамнез и наследственность.',
-        17 => 'Работа, проживание и факторы среды.',
-        18 => 'Менструальный цикл и беременность.',
-        19 => 'Либидо и урологические симптомы.',
-    ];
     return [
         'title' => section_clean_title($section['title'] ?? ('Блок '.$index)),
-        'summary' => $summaries[$index] ?? 'Заполните ответы раздела.',
         'icon' => section_icon_svg($index),
     ];
 }
@@ -1358,7 +1362,7 @@ function render_section_card($section, $index) {
     $html = '<section class="'.e($classes).'"'.$sexAttrs.'>';
     $html .= '<aside class="section-aside">';
     $html .= '<div class="section-number">'.e($index).'</div>';
-    $html .= '<div><h2>'.e($meta['title']).'</h2><p>'.e($meta['summary']).'</p></div>';
+    $html .= '<div><h2>'.e($meta['title']).'</h2></div>';
     $html .= '</aside>';
     $html .= '<div class="section-content">';
     foreach ($section['questions'] as $q) {
@@ -3548,6 +3552,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
         'waist' => trim((string)postv('waist')),
         'filled_at' => trim((string)postv('filled_at', date('Y-m-d'))),
     ];
+    if (!filter_var($patient['email'], FILTER_VALIDATE_EMAIL)) {
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Введите корректный адрес электронной почты.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
 
     $GLOBALS['current_response_survey_title'] = $questionnaire['title'] ?? 'Анкета здоровья';
     $GLOBALS['current_response_questionnaire_id'] = $questionnaire['id'] ?? null;
@@ -3556,9 +3567,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
     if (!response_has_medical_answers($readableAnswers)) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
+        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
         echo json_encode([
             'ok' => (bool)$responseId,
-            'message' => $responseId ? 'Ответ успешно сохранён без отправки в ИИ: заполнен только блок общей информации.' : 'Не удалось сохранить ответ в базе данных.',
+            'message' => $responseId ? 'Анкета успешно отправлена.' : 'Не удалось сохранить ответ в базе данных.',
+            'email_sent' => $emailSent,
             'rnova_task' => $rnovaTask,
             'warning' => 'VSEGPT не вызывался, потому что медицинские блоки анкеты пустые.',
             'response_id' => $responseId,
@@ -3633,10 +3646,12 @@ $userPayload = [
     if (!$api['ok']) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
+        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'rnova_task' => $rnovaTask,
+            'email_sent' => $emailSent,
             'warning' => $api['error'],
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -3649,10 +3664,12 @@ $userPayload = [
     if (!is_array($decoded)) {
         $responseId = add_patient_response($draftRecord);
         $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
+        $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
         echo json_encode([
             'ok' => (bool)$responseId,
             'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
             'rnova_task' => $rnovaTask,
+            'email_sent' => $emailSent,
             'warning' => 'VSEGPT вернул невалидный JSON.',
             'response_id' => $responseId,
             'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -3674,10 +3691,12 @@ $userPayload = [
     $record['history'][] = ['date' => date('c'), 'event' => 'Сгенерировано ИИ'];
     $responseId = add_patient_response($record);
     $rnovaTask = $responseId ? queue_rnova_task_for_response_id($responseId) : null;
+    $emailSent = $responseId ? send_patient_questionnaire_confirmation($patient) : false;
 
     echo json_encode([
         'ok' => (bool)$responseId,
         'rnova_task' => $rnovaTask,
+        'email_sent' => $emailSent,
         'message' => $responseId ? 'Ответ успешно отправлен.' : 'Ответ получен, но не удалось сохранить его в базе данных.',
         'response_id' => $responseId,
         'payment_url' => $responseId ? prodamus_payment_url($responseId, $patient) : '',
@@ -3696,7 +3715,6 @@ function questionnaire_list_items($sections) {
         $meta = section_meta($i + 2, $sections[$i]);
         $items[] = [
             'title' => $meta['title'],
-            'summary' => $meta['summary'],
             'category' => 'Раздел анкеты здоровья',
             'status' => 'active',
             'created' => '—',
@@ -4296,7 +4314,6 @@ $sections = apply_hint_config($sections, $hintConfig);
                 <div class="section-number">1</div>
                 <div>
                     <h2>ОБЩАЯ ИНФОРМАЦИЯ</h2>
-                    <p>ФИО, дата рождения, пол, рост, вес и др.</p>
                 </div>
             </aside>
             <div class="section-content">
@@ -4323,7 +4340,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     </div>
                     <div class="question">
                         <div class="question-label">E-mail</div>
-                        <input class="field" type="email" name="email">
+                        <input class="field" type="email" name="email" required>
                     </div>
                     <div class="question">
                         <div class="question-label">Пол</div>
@@ -4759,7 +4776,7 @@ $sections = apply_hint_config($sections, $hintConfig);
             submitBtn.textContent = 'Отправляем анкету';
             if (result) {
                 result.style.display = 'block';
-                result.innerHTML = '<div class="muted">Отправляем анкету на анализ ИИ без оплаты...</div>';
+                result.innerHTML = '<div class="muted">Отправляем анкету...</div>';
             }
 
             try {
@@ -4768,9 +4785,12 @@ $sections = apply_hint_config($sections, $hintConfig);
                 if (!data.ok) throw new Error(data.error || data.message || 'Ошибка при сохранении анкеты');
                 openSuccessModal({
                     title: 'Анкета успешно отправлена',
-                    text: 'Анкета отправлена. Оплата не требуется, потому что стоимость анкеты в настройках равна 0.'
+                    text: 'Ваша анкета зарегистрирована в нашей системе.'
                 });
-                if (result) result.innerHTML = `<div class="success">${escapeHtml(data.message || 'Анкета успешно отправлена.')}</div>`;
+                if (result) {
+                    result.innerHTML = '';
+                    result.style.display = 'none';
+                }
                 form.reset();
                 updateProgress();
             } catch (err) {
