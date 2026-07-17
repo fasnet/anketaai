@@ -3016,6 +3016,12 @@ function rnova_required_payload_fields($path) {
             'patient_id' => 'ID пациента (patient_id)',
             'due_date' => 'срок задачи (due_date)',
         ],
+        'uploadFile' => [
+            'content' => 'содержимое файла (content)',
+            'title' => 'название файла (title)',
+            'type' => 'тип файла (type)',
+            'patient_id' => 'ID пациента (patient_id)',
+        ],
     ];
     return $requiredByMethod[$methodName] ?? [];
 }
@@ -3159,18 +3165,34 @@ function create_rnova_task_for_response($response) {
 function attach_response_pdf_to_rnova_task($response) {
     $patientResult = rnova_ensure_patient($response);
     if (!$patientResult['ok']) return $patientResult;
-    $patientId = $response['mis_patient_id'] ?? $patientResult['patient_id'];
+    $patientId = trim((string)($response['mis_patient_id'] ?? '')) !== ''
+        ? $response['mis_patient_id']
+        : $patientResult['patient_id'];
     $taskId = trim((string)($response['mis_task_id'] ?? ''));
     if ($taskId === '') {
         return ['ok' => false, 'error' => 'Для прикрепления PDF не найден ID текущей задачи RNOVA. Сначала создайте активную задачу.'];
     }
-    $file = rnova_request('POST', 'uploadFile', rnova_filter_payload([
+    $pdf = simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты', response_pdf_patient_name($response), $response['patient']['sex'] ?? '');
+    if (strlen($pdf) > 10 * 1024 * 1024) {
+        return ['ok' => false, 'error' => 'PDF превышает максимальный размер файла RNOVA (10 МБ).'];
+    }
+    $filePayload = rnova_filter_payload([
         'patient_id' => $patientId,
-        'task_id' => $taskId,
         'title' => 'Ответы анкеты ' . ($response['id'] ?? '') . '.pdf',
         'type' => 'pdf',
-        'content' => base64_encode(simple_pdf_document(response_pdf_blocks($response), 'Расшифровка анкеты', response_pdf_patient_name($response), $response['patient']['sex'] ?? '')),
-    ]));
+        'content' => base64_encode($pdf),
+        'is_api_on' => '1',
+        'source' => 'Задача RNOVA #' . $taskId . ': ' . ($response['survey'] ?? 'Анкета'),
+        'document_type' => 'doctor',
+    ]);
+    $missingFileFields = rnova_payload_missing_fields('uploadFile', $filePayload);
+    if ($missingFileFields) {
+        return ['ok' => false, 'error' => 'Для загрузки PDF в карточку пациента RNOVA не заполнены обязательные параметры: ' . implode(', ', $missingFileFields) . '.'];
+    }
+    // uploadFile stores the document in the patient's MIS card. RNOVA's method
+    // has no task_id parameter, so the source identifies the questionnaire task;
+    // mis_task_id remains the authoritative local link to that active task.
+    $file = rnova_request('POST', 'uploadFile', $filePayload);
     if (!$file['ok']) return $file;
     return ['ok' => true, 'patient_id' => $patientId, 'task_id' => $taskId, 'file' => $file['data']];
 }
@@ -3541,11 +3563,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
             $item['mis_patient_id'] = $sent['patient_id'] ?? null;
             $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
             $item['mis_file'] = $sent['file'] ?? null;
-            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к активной задаче RNOVA, задача не закрывалась'];
+            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к карточке пациента RNOVA и связан с активной задачей анкеты, задача не закрывалась'];
             return $item;
         });
     }
-    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана, PDF прикреплён к текущей задаче RNOVA.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана: PDF прикреплён к карточке пациента в RNOVA и связан с текущей задачей анкеты.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -3569,7 +3591,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'se
             $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
             $item['mis_task'] = $sent['task'] ?? ($item['mis_task'] ?? null);
             $item['mis_file'] = $sent['file'] ?? null;
-            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к активной задаче RNOVA'];
+            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к карточке пациента RNOVA и связан с активной задачей анкеты'];
             return $item;
         });
     }
