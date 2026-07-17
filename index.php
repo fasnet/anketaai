@@ -1,6 +1,16 @@
 <?php
 declare(strict_types=1);
 
+const AUTH_SESSION_TTL = 86400;
+
+ini_set('session.gc_maxlifetime', (string)AUTH_SESSION_TTL);
+session_set_cookie_params([
+    'lifetime' => AUTH_SESSION_TTL,
+    'path' => '/',
+    'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
 /*
@@ -40,6 +50,70 @@ function postv($key, $default = '') {
     return $_POST[$key] ?? $default;
 }
 
+function smtp_read_response($socket): string {
+    $response = '';
+    while (($line = fgets($socket, 515)) !== false) {
+        $response .= $line;
+        if (strlen($line) >= 4 && $line[3] === ' ') break;
+    }
+    return $response;
+}
+
+function smtp_command($socket, string $command, array $expectedCodes): bool {
+    if ($command !== '') fwrite($socket, $command . "\r\n");
+    $response = smtp_read_response($socket);
+    return in_array((int)substr($response, 0, 3), $expectedCodes, true);
+}
+
+function send_via_yandex_smtp(string $to, string $subject, string $message): bool {
+    $username = trim((string)getenv('YANDEX_SMTP_USERNAME'));
+    $password = (string)getenv('YANDEX_SMTP_PASSWORD');
+    $from = trim((string)(getenv('YANDEX_SMTP_FROM') ?: $username));
+    if (!filter_var($username, FILTER_VALIDATE_EMAIL) || $password === '' || !filter_var($from, FILTER_VALIDATE_EMAIL)) {
+        error_log('Yandex SMTP is not configured: set YANDEX_SMTP_USERNAME, YANDEX_SMTP_PASSWORD and optionally YANDEX_SMTP_FROM.');
+        return false;
+    }
+
+    $errorNumber = 0;
+    $errorMessage = '';
+    $socket = @stream_socket_client('ssl://smtp.yandex.ru:465', $errorNumber, $errorMessage, 15);
+    if (!is_resource($socket)) {
+        error_log('Yandex SMTP connection failed: ' . $errorMessage . ' (' . $errorNumber . ')');
+        return false;
+    }
+    stream_set_timeout($socket, 15);
+
+    $subjectHeader = function_exists('mb_encode_mimeheader')
+        ? mb_encode_mimeheader($subject, 'UTF-8', 'B', "\r\n")
+        : '=?UTF-8?B?' . base64_encode($subject) . '?=';
+    $headers = [
+        'Date: ' . date(DATE_RFC2822),
+        'From: Adaptogenzz Clinic <' . $from . '>',
+        'To: <' . $to . '>',
+        'Subject: ' . $subjectHeader,
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+    ];
+    $body = str_replace(["\r\n", "\r"], "\n", $message);
+    $body = str_replace("\n.", "\n..", $body);
+    $data = implode("\r\n", $headers) . "\r\n\r\n" . str_replace("\n", "\r\n", $body) . "\r\n.";
+
+    $hostname = gethostname() ?: 'localhost';
+    $ok = smtp_command($socket, '', [220])
+        && smtp_command($socket, 'EHLO ' . $hostname, [250])
+        && smtp_command($socket, 'AUTH LOGIN', [334])
+        && smtp_command($socket, base64_encode($username), [334])
+        && smtp_command($socket, base64_encode($password), [235])
+        && smtp_command($socket, 'MAIL FROM:<' . $from . '>', [250])
+        && smtp_command($socket, 'RCPT TO:<' . $to . '>', [250, 251])
+        && smtp_command($socket, 'DATA', [354])
+        && smtp_command($socket, $data, [250]);
+    if ($ok) smtp_command($socket, 'QUIT', [221]);
+    fclose($socket);
+    return $ok;
+}
+
 function send_patient_questionnaire_confirmation(array $patient): bool {
     $email = trim((string)($patient['email'] ?? ''));
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) return false;
@@ -51,19 +125,7 @@ function send_patient_questionnaire_confirmation(array $patient): bool {
     $message = $recipientName . ', Ваша анкета зарегистрирована в нашей системе. '
         . 'Наши врачи внимательно изучат предоставленную информацию и перечень анализов будет направлен Вам '
         . 'на электронную почту не позднее чем через 3 дня.';
-    $subjectText = 'Анкета зарегистрирована';
-    $subject = function_exists('mb_encode_mimeheader')
-        ? mb_encode_mimeheader($subjectText, 'UTF-8', 'B', "\r\n")
-        : '=?UTF-8?B?' . base64_encode($subjectText) . '?=';
-    $headers = implode("\r\n", [
-        'From: Adaptogenzz Clinic <clinic@adaptogenzz.pro>',
-        'Reply-To: clinic@adaptogenzz.pro',
-        'MIME-Version: 1.0',
-        'Content-Type: text/plain; charset=UTF-8',
-        'Content-Transfer-Encoding: 8bit',
-    ]);
-
-    return mail($email, $subject, $message, $headers);
+    return send_via_yandex_smtp($email, 'Анкета зарегистрирована', $message);
 }
 
 
@@ -286,6 +348,11 @@ function money_amount_input_value($amount) {
 
 function current_user() {
     $id = $_SESSION['user_id'] ?? null;
+    $expiresAt = (int)($_SESSION['auth_expires_at'] ?? 0);
+    if ($id && ($expiresAt === 0 || $expiresAt <= time())) {
+        logout_user();
+        return null;
+    }
     if (!$id) return null;
     $stmt = db()->prepare('SELECT id, login, full_name, email, created_at, updated_at FROM app_users WHERE id=?');
     $stmt->execute([(int)$id]);
@@ -305,6 +372,7 @@ function login_user($login, $password) {
     }
     session_regenerate_id(true);
     $_SESSION['user_id'] = (int)$user['id'];
+    $_SESSION['auth_expires_at'] = time() + AUTH_SESSION_TTL;
     return true;
 }
 
@@ -668,6 +736,11 @@ function normalize_russian_phone($phone) {
 function is_valid_russian_phone($phone) {
     $digits = preg_replace('/\D+/', '', normalize_russian_phone($phone)) ?? '';
     return strlen($digits) === 11 && $digits[0] === '7';
+}
+
+function rnova_phone($phone) {
+    $normalized = normalize_russian_phone($phone);
+    return is_valid_russian_phone($normalized) ? $normalized : '+71111111111';
 }
 
 function is_payment_required() {
@@ -2965,7 +3038,7 @@ function rnova_required_patient_fields_missing($patient) {
     return $missing;
 }
 
-function rnova_patient_payload($patient, $includeMobile = true) {
+function rnova_patient_payload($patient) {
     $firstName = trim((string)($patient['name'] ?? ''));
     $thirdName = trim((string)($patient['patronymic'] ?? ''));
     if ($thirdName === '') {
@@ -2979,7 +3052,7 @@ function rnova_patient_payload($patient, $includeMobile = true) {
         'first_name' => $firstName,
         'third_name' => $thirdName,
         'birth_date' => rnova_date($patient['dob'] ?? ''),
-        'mobile' => $includeMobile ? normalize_russian_phone($patient['phone'] ?? '') : '',
+        'mobile' => rnova_phone($patient['phone'] ?? ''),
         'email' => trim((string)($patient['email'] ?? '')),
         'gender' => rnova_gender($patient['sex'] ?? ''),
     ]);
@@ -2989,31 +3062,24 @@ function rnova_error_contains($result, $needle) {
     return mb_stripos((string)($result['error'] ?? ''), $needle, 0, 'UTF-8') !== false;
 }
 
-function rnova_find_patient_id($patient, $includeMobile = true) {
-    $payload = rnova_patient_payload($patient, $includeMobile);
+function rnova_find_patient_id($patient) {
+    $payload = rnova_patient_payload($patient);
     $queries = [];
-    $demographicQuery = rnova_filter_payload([
+    $fullNameQuery = rnova_filter_payload([
         'last_name' => $payload['last_name'] ?? '',
         'first_name' => $payload['first_name'] ?? '',
         'third_name' => $payload['third_name'] ?? '',
-        'birth_date' => $payload['birth_date'] ?? '',
     ]);
-    if ($includeMobile && !empty($payload['mobile'])) {
-        $queries[] = ['mobile' => $payload['mobile']];
-    }
     if (!empty($payload['email'])) {
         $queries[] = ['email' => $payload['email']];
     }
-    if (count($demographicQuery) >= 3) {
-        $queries[] = $demographicQuery;
+    if (count($fullNameQuery) >= 3) {
+        $queries[] = $fullNameQuery;
     }
 
     foreach ($queries as $query) {
         $found = rnova_request('POST', 'getPatient', $query);
         if (!$found['ok']) {
-            if (rnova_error_contains($found, 'Неверно указан номер телефона')) {
-                continue;
-            }
             if ((int)($found['http'] ?? 0) >= 500) return $found;
             continue;
         }
@@ -3030,16 +3096,13 @@ function rnova_ensure_patient($response) {
         return ['ok' => false, 'error' => 'Для создания пациента RNOVA не заполнены обязательные поля: ' . implode(', ', $missing) . '. Обязательные параметры RNOVA: фамилия, имя, дата рождения.'];
     }
 
-    $found = rnova_find_patient_id($patient, true);
+    $found = rnova_find_patient_id($patient);
     if (!$found['ok']) return $found;
     if (!empty($found['patient_id'])) return $found;
 
-    $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient, true));
-    if (!$created['ok'] && rnova_error_contains($created, 'Неверно указан номер телефона')) {
-        $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient, false));
-    }
+    $created = rnova_request('POST', 'createPatient', rnova_patient_payload($patient));
     if (!$created['ok'] && rnova_error_contains($created, 'Такой пациент уже существует')) {
-        $found = rnova_find_patient_id($patient, !rnova_error_contains($created, 'Неверно указан номер телефона'));
+        $found = rnova_find_patient_id($patient);
         if (!$found['ok']) return $found;
         if (!empty($found['patient_id'])) return $found;
     }
@@ -3530,14 +3593,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'an
         exit;
     }
 
-    $phone = normalize_russian_phone(postv('phone'));
-    if (!is_valid_russian_phone($phone)) {
-        echo json_encode([
-            'ok' => false,
-            'error' => 'Введите телефон в формате +7 (___) ___-__-__.',
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        exit;
-    }
+    $phone = trim((string)postv('phone'));
 
     $patient = [
         'surname' => $surname,
@@ -4336,7 +4392,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     </div>
                     <div class="question">
                         <div class="question-label">Телефон</div>
-                        <input class="field" type="tel" name="phone" value="+7 (" placeholder="+7 (___) ___-__-__" inputmode="tel" autocomplete="tel" maxlength="18" pattern="^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$" title="Введите телефон в формате +7 (___) ___-__-__" required>
+                        <input class="field" type="tel" name="phone" placeholder="Номер телефона" inputmode="tel" autocomplete="tel" required>
                     </div>
                     <div class="question">
                         <div class="question-label">E-mail</div>
@@ -4665,37 +4721,6 @@ $sections = apply_hint_config($sections, $hintConfig);
         const maleSection = document.querySelector('[data-sex-section="male"]');
         const progressText = document.getElementById('progressText');
         const progressFill = document.getElementById('progressFill');
-
-        const phoneInput = form.querySelector('input[name="phone"]');
-        function formatRussianPhone(value) {
-            let digits = String(value || '').replace(/\D/g, '');
-            if (digits.startsWith('8')) digits = '7' + digits.slice(1);
-            if (digits.startsWith('7')) digits = digits.slice(1);
-            digits = digits.slice(0, 10);
-            let result = '+7 (';
-            if (digits.length > 0) result += digits.slice(0, 3);
-            if (digits.length >= 3) result += ') ';
-            if (digits.length > 3) result += digits.slice(3, 6);
-            if (digits.length >= 6) result += '-';
-            if (digits.length > 6) result += digits.slice(6, 8);
-            if (digits.length >= 8) result += '-';
-            if (digits.length > 8) result += digits.slice(8, 10);
-            return result;
-        }
-        if (phoneInput) {
-            phoneInput.value = formatRussianPhone(phoneInput.value);
-            phoneInput.addEventListener('input', () => {
-                phoneInput.value = formatRussianPhone(phoneInput.value);
-                phoneInput.setSelectionRange(phoneInput.value.length, phoneInput.value.length);
-                updateProgress();
-            });
-            phoneInput.addEventListener('focus', () => {
-                if (!phoneInput.value.trim()) phoneInput.value = '+7 (';
-            });
-            phoneInput.addEventListener('blur', () => {
-                if (phoneInput.value === '+7 (') phoneInput.value = '';
-            });
-        }
 
         function namedCheckedCount(name) {
             return Array.from(form.elements).filter(field => field.name === name && field.checked).length;
