@@ -2502,6 +2502,38 @@ function simple_pdf_png_info($path) {
         if ($type === 'IEND') break;
         $pos += 12 + $len;
     }
+    if ($colorType === 6 && $bitDepth === 8 && ord($data[28] ?? "\0") === 0) {
+        // logo33.png is an RGBA PNG. Decode its scanlines when GD is not
+        // available, so the vector-PDF fallback can still embed the logo.
+        $raw = @gzuncompress($idat);
+        $rowBytes = $width * 4;
+        if ($raw === false || strlen($raw) < ($rowBytes + 1) * $height) return null;
+        $rgb = ''; $alpha = ''; $offset = 0; $previousRow = str_repeat("\0", $rowBytes);
+        for ($rowIndex = 0; $rowIndex < $height; $rowIndex++) {
+            $filter = ord($raw[$offset++]); $row = '';
+            for ($column = 0; $column < $rowBytes; $column++) {
+                $value = ord($raw[$offset++]);
+                $left = $column >= 4 ? ord($row[$column - 4]) : 0;
+                $up = ord($previousRow[$column]);
+                $upLeft = $column >= 4 ? ord($previousRow[$column - 4]) : 0;
+                if ($filter === 1) $value += $left;
+                elseif ($filter === 2) $value += $up;
+                elseif ($filter === 3) $value += intdiv($left + $up, 2);
+                elseif ($filter === 4) {
+                    $estimate = $left + $up - $upLeft;
+                    $leftDistance = abs($estimate - $left); $upDistance = abs($estimate - $up); $upLeftDistance = abs($estimate - $upLeft);
+                    $value += $leftDistance <= $upDistance && $leftDistance <= $upLeftDistance ? $left : ($upDistance <= $upLeftDistance ? $up : $upLeft);
+                } elseif ($filter !== 0) return null;
+                $row .= chr($value & 0xFF);
+            }
+            for ($column = 0; $column < $rowBytes; $column += 4) {
+                $rgb .= $row[$column] . $row[$column + 1] . $row[$column + 2];
+                $alpha .= $row[$column + 3];
+            }
+            $previousRow = $row;
+        }
+        return ['width' => $width, 'height' => $height, 'colorspace' => '/DeviceRGB', 'colors' => 3, 'bits' => 8, 'data' => gzcompress($rgb), 'smask' => gzcompress($alpha)];
+    }
     if ($colorType === 2) {
         $colorspace = '/DeviceRGB';
         $colors = 3;
