@@ -2626,12 +2626,15 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         $y = $drawWrapped($page, 'После того как вы получите результаты анализов (в любой лаборатории), вы можете записаться на приём к терапевту в нашу клинику для интерпретации данных и получения медицинских рекомендаций.', 45, $y, 8, 500, $fontPath, $ink, 10); $y += 9;
         $offerTitle = 'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ';
         $offerText = 'Скидка 10% на приём врача-терапевта или врача общей практики, если все исследования были проведены в наших клиниках.';
+        $offerQualification = 'Скидка 10% предоставляется, если исследования из рекомендаций, которые входят в перечень наших услуг, были сданы именно в наших клиниках.';
         $offerTitleLines = simple_pdf_wrap_text($offerTitle, 8, 485, $boldFontPath);
         $offerTextLines = simple_pdf_wrap_text($offerText, 8, 485, $fontPath);
-        $offerHeight = 12 + count($offerTitleLines) * 10 + 3 + count($offerTextLines) * 10 + 12;
+        $offerQualificationLines = simple_pdf_wrap_text($offerQualification, 8, 485, $fontPath);
+        $offerHeight = 12 + count($offerTitleLines) * 10 + 3 + count($offerTextLines) * 10 + 30 + count($offerQualificationLines) * 10 + 12;
         $rect($page, 41, $y, 513, $offerHeight, $cyan); $textY = $y + 12;
         $textY = $drawWrapped($page, $offerTitle, 53, $textY, 8, 485, $boldFontPath, [255,255,255], 10);
-        $drawWrapped($page, $offerText, 53, $textY + 3, 8, 485, $fontPath, [255,255,255], 10);
+        $textY = $drawWrapped($page, $offerText, 53, $textY + 3, 8, 485, $fontPath, [255,255,255], 10);
+        $drawWrapped($page, $offerQualification, 53, $textY + 30, 8, 485, $fontPath, [255,255,255], 10);
         $y += $offerHeight + 22;
         simple_pdf_draw_ttf_text($page, $fontPath, 8, 45, $y, 'С уважением,', $scale, $ink); simple_pdf_draw_ttf_text($page, $boldFontPath, 8, 45, $y + 12, 'Команда специалистов Adaptogenzz', $scale, $cyan); simple_pdf_draw_ttf_text($page, $fontPath, 7, 45, $y + 24, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
     };
@@ -2681,7 +2684,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
-    $logo = simple_pdf_png_info(__DIR__ . '/logo33.png') ?: simple_pdf_png_info(__DIR__ . '/logo22.png');
+    $logo = simple_pdf_png_info(__DIR__ . '/logo33.png');
     $aiBlocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     $aiBlocks = array_map(function ($block) {
         if (!is_array($block)) $block = ['text' => (string)$block, 'style' => 'paragraph'];
@@ -2709,7 +2712,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $aiBlocks,
             $fontPath,
             is_readable($boldFontPath) ? $boldFontPath : $fontPath,
-            is_readable(__DIR__ . '/logo33.png') ? __DIR__ . '/logo33.png' : __DIR__ . '/logo22.png',
+            __DIR__ . '/logo33.png',
             $patientName,
             $patientSex
         );
