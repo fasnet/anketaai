@@ -2550,6 +2550,23 @@ function simple_pdf_png_info($path) {
     return ['width' => $width, 'height' => $height, 'colorspace' => $colorspace, 'colors' => $colors, 'bits' => $bitDepth, 'data' => $idat, 'smask' => ''];
 }
 
+function simple_pdf_jpeg_info($path) {
+    if (!is_readable($path)) return null;
+    $size = @getimagesize($path);
+    $data = @file_get_contents($path);
+    if (!is_array($size) || $data === false || ($size[2] ?? null) !== IMAGETYPE_JPEG) return null;
+    $channels = (int)($size['channels'] ?? 3);
+    return [
+        'width' => (int)$size[0],
+        'height' => (int)$size[1],
+        'colorspace' => $channels === 1 ? '/DeviceGray' : '/DeviceRGB',
+        'bits' => (int)($size['bits'] ?? 8),
+        'data' => $data,
+        'smask' => '',
+        'filter' => '/DCTDecode',
+    ];
+}
+
 
 function simple_pdf_raster_image_stream($image) {
     $width = imagesx($image);
@@ -2594,8 +2611,8 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         if ($first) {
             // The first-page header is composed from the repository logo and
             // the two contact lines shown in the approved layout.
-            if ($logoPath !== '' && function_exists('imagecreatefrompng')) {
-                $logo = @imagecreatefrompng($logoPath);
+            if ($logoPath !== '' && function_exists('imagecreatefromjpeg')) {
+                $logo = @imagecreatefromjpeg($logoPath);
                 if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
             }
             // Keep the clinic name and contact line aligned to the same right edge.
@@ -2720,7 +2737,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
-    $logo = simple_pdf_png_info(__DIR__ . '/logo33.png');
+    $logo = simple_pdf_jpeg_info(__DIR__ . '/logo44.jpg');
     $aiBlocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     $aiBlocks = array_map(function ($block) {
         if (!is_array($block)) $block = ['text' => (string)$block, 'style' => 'paragraph'];
@@ -2748,7 +2765,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $aiBlocks,
             $fontPath,
             is_readable($boldFontPath) ? $boldFontPath : $fontPath,
-            __DIR__ . '/logo33.png',
+            __DIR__ . '/logo44.jpg',
             $patientName,
             $patientSex
         );
@@ -2759,10 +2776,12 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $startPage = function ($showHeader = true) use (&$pdfLines, $logo) {
         $pdfLines = [];
         if ($showHeader && $logo) {
-            $logoWidth = 72;
+            // Match the raster renderer: a prominent logo at the upper-left
+            // corner of the first page rather than a small icon in the margin.
+            $logoWidth = 176;
             $logoHeight = max(1, (int)round($logoWidth * ((float)$logo['height'] / max(1, (float)$logo['width']))));
-            $logoY = 800 - $logoHeight;
-            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 95 ' . $logoY . ' cm /Im1 Do Q';
+            $logoY = 842 - 24 - $logoHeight;
+            $pdfLines[] = 'q ' . $logoWidth . ' 0 0 ' . $logoHeight . ' 41 ' . $logoY . ' cm /Im1 Do Q';
         }
         $pdfLines[] = 'BT';
         if ($showHeader) {
@@ -2843,7 +2862,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     // PDF fonts entirely; this fallback keeps ToUnicode/CID maps for text data.
     $objects[$cidMap1Id] = simple_pdf_stream_object($cidMap1Id, '', $cidToGidMap, true);
     $smaskRef = ($logo && !empty($logo['smask'])) ? ' /SMask ' . $smaskId . ' 0 R' : '';
-    $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter /FlateDecode' . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
+    $objects[$imageId] = $logo ? simple_pdf_stream_object($imageId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace ' . $logo['colorspace'] . ' /BitsPerComponent ' . (int)$logo['bits'] . ' /Filter ' . ($logo['filter'] ?? '/FlateDecode') . $smaskRef, $logo['data']) : ($imageId . ' 0 obj << >> endobj');
     $objects[$f2Id] = $f2Id . ' 0 obj << /Type /Font /Subtype /Type0 /BaseFont /' . $boldFontBaseName . ' /Encoding /Identity-H /DescendantFonts [' . $cidFont2Id . ' 0 R] /ToUnicode ' . $toUnicodeId . ' 0 R >> endobj';
     $objects[$cidFont2Id] = $cidFont2Id . ' 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /' . $boldFontBaseName . ' /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ' . $fontDescriptor2Id . ' 0 R /CIDToGIDMap ' . $cidMap2Id . ' 0 R /DW 600 >> endobj';
     $objects[$smaskId] = ($logo && !empty($logo['smask'])) ? simple_pdf_stream_object($smaskId, '/Type /XObject /Subtype /Image /Width ' . (int)$logo['width'] . ' /Height ' . (int)$logo['height'] . ' /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode', $logo['smask']) : ($smaskId . ' 0 obj << >> endobj');
