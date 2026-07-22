@@ -2559,9 +2559,13 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         imageline($image, $x1 * $scale, $y1 * $scale, $x2 * $scale, $y2 * $scale, $color);
     };
     $header = function ($image, $pageNo, $first = false) use ($scale, $logoPath, $boldFontPath, $fontPath, $cyan, $muted, $line) {
-        if ($first && $logoPath !== '' && function_exists('imagecreatefrompng')) {
-            $logo = @imagecreatefrompng($logoPath);
-            if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
+        if ($first) {
+            // The first-page header is composed from the repository logo and
+            // the two contact lines shown in the approved layout.
+            if ($logoPath !== '' && function_exists('imagecreatefrompng')) {
+                $logo = @imagecreatefrompng($logoPath);
+                if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
+            }
             // Keep the clinic name and contact line aligned to the same right edge.
             $headerRight = 554;
             $clinicName = 'СЕТЬ КЛИНИК ADAPTOGENZZ';
