@@ -2559,11 +2559,21 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         imageline($image, $x1 * $scale, $y1 * $scale, $x2 * $scale, $y2 * $scale, $color);
     };
     $header = function ($image, $pageNo, $first = false) use ($scale, $logoPath, $boldFontPath, $fontPath, $cyan, $muted, $line) {
-        if ($first && $logoPath !== '' && function_exists('imagecreatefrompng')) {
-            $logo = @imagecreatefrompng($logoPath);
-            if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
-            simple_pdf_draw_ttf_text($image, $boldFontPath, 7, 382, 38, 'СЕТЬ КЛИНИК ADAPTOGENZZ', $scale, $cyan);
-            simple_pdf_draw_ttf_text($image, $fontPath, 6, 371, 50, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
+        if ($first) {
+            // The first-page header is composed from the repository logo and
+            // the two contact lines shown in the approved layout.
+            if ($logoPath !== '' && function_exists('imagecreatefrompng')) {
+                $logo = @imagecreatefrompng($logoPath);
+                if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
+            }
+            // Keep the clinic name and contact line aligned to the same right edge.
+            $headerRight = 554;
+            $clinicName = 'СЕТЬ КЛИНИК ADAPTOGENZZ';
+            $contactLine = '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro';
+            $clinicNameX = $headerRight - simple_pdf_ttf_text_width($clinicName, 7 * $scale, $boldFontPath) / $scale;
+            $contactLineX = $headerRight - simple_pdf_ttf_text_width($contactLine, 6 * $scale, $fontPath) / $scale;
+            simple_pdf_draw_ttf_text($image, $boldFontPath, 7, $clinicNameX, 38, $clinicName, $scale, $cyan);
+            simple_pdf_draw_ttf_text($image, $fontPath, 6, $contactLineX, 50, $contactLine, $scale, $muted);
             $line($image, 41, 73, 554, 73, $cyan, 2);
         } else {
             simple_pdf_draw_ttf_text($image, $boldFontPath, 7, 45, 26, 'ADAPTOGENZZ  ·  ПЕРСОНАЛЬНЫЙ ИНФОРМАЦИОННЫЙ ОБЗОР', $scale, $cyan);
@@ -2582,8 +2592,12 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
     foreach ($blocks as $block) {
         $text = trim((string)($block['text'] ?? '')); if ($text === '') continue;
         $style = $block['style'] ?? 'paragraph'; $lower = mb_strtolower($text, 'UTF-8');
-        if ($style === 'heading' && str_contains($lower, 'рекомендуем')) $group = 'recommendations';
-        if ($style === 'heading' && str_contains($lower, 'следующ')) $group = 'steps';
+        $isRecommendationHeading = $style === 'heading' && str_contains($lower, 'рекомендуем');
+        $isStepsHeading = $style === 'heading' && str_contains($lower, 'следующ');
+        if ($isRecommendationHeading) $group = 'recommendations';
+        if ($isStepsHeading) $group = 'steps';
+        // Section names are rendered below, so omit matching AI headings.
+        if ($isRecommendationHeading || $isStepsHeading) continue;
         $groups[$group][] = ['text' => $text, 'style' => $style];
     }
     $pageNo = 1; $page = $newPage(); $header($page, $pageNo, true); $y = 88;
@@ -2592,7 +2606,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
     $line($page, 41, $y, 554, $y, $cyan, 2); $y += 27;
     $y = $drawWrapped($page, response_pdf_greeting_word($patientSex) . ' ' . ($patientName !== '' ? $patientName : '________________________') . '!', 42, $y, 9, 500, $boldFontPath, $ink, 12); $y += 7;
     $y = $drawWrapped($page, 'Благодарим вас за заполнение анкеты. На основе предоставленных вами сведений мы подготовили информационный обзор лабораторных и инструментальных методов исследования, которые могут быть актуальны при ваших симптомах и особенностях здоровья.', 42, $y, 8, 500, $fontPath, $ink, 10); $y += 6;
-    $rect($page, 41, $y, 513, 28, [230, 245, 249]); $line($page, 41, $y, 41, $y + 28, $cyan, 2);
+    $rect($page, 41, $y, 513, 28, [230, 245, 249]); $rect($page, 41, $y, 3, 28, $cyan);
     simple_pdf_draw_ttf_text($page, $boldFontPath, 7, 51, $y + 10, 'ОБРАТИТЕ ВНИМАНИЕ', $scale, $cyan);
     simple_pdf_draw_ttf_text($page, $fontPath, 7, 51, $y + 21, 'Настоящий обзор не является медицинским заключением, диагнозом или назначением.', $scale, $ink); $y += 43;
     $y = $drawWrapped($page, 'Ниже приведён перечень анализов и диагностических процедур, о которых врачи часто упоминают в подобных ситуациях.', 42, $y, 8, 500, $fontPath, $ink, 10); $y += 8;
@@ -2603,7 +2617,7 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
     }
     $renderGroup = function ($items, $heading, $special = false) use (&$pageNo, &$page, &$y, $newPage, $header, $drawWrapped, $boldFontPath, $fontPath, $cyan, $ink, $muted, $rect, $line, $scale) {
         if (!$items && !$special) return; $pageNo++; $page = $newPage(); $header($page, $pageNo); $y = 63;
-        simple_pdf_draw_ttf_text($page, $boldFontPath, 12, 45, $y, $heading, $scale, $cyan); $y += 11; $line($page, 41, $y, 554, $y, $cyan, 1); $y += 21;
+        simple_pdf_draw_ttf_text($page, $boldFontPath, 12, 45, $y, $heading, $scale, $cyan); $y += 21;
         foreach ($items as $block) {
             if ($y > 720) { $pageNo++; $page = $newPage(); $header($page, $pageNo); $y = 62; }
             if ($block['style'] === 'heading') { $y += 3; $y = $drawWrapped($page, $block['text'], 45, $y, 9, 500, $boldFontPath, $ink, 12); $y += 3; continue; }
@@ -2614,10 +2628,19 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         simple_pdf_draw_ttf_text($page, $boldFontPath, 7, 52, $y + 10, 'ВАЖНО', $scale, [211, 78, 28]);
         simple_pdf_draw_ttf_text($page, $fontPath, 7, 52, $y + 21, 'Перечень составлен как справочный материал на основании ваших ответов.', $scale, $ink); $y += 42;
         $y = $drawWrapped($page, 'После того как вы получите результаты анализов (в любой лаборатории), вы можете записаться на приём к терапевту в нашу клинику для интерпретации данных и получения медицинских рекомендаций.', 45, $y, 8, 500, $fontPath, $ink, 10); $y += 9;
-        $rect($page, 41, $y, 513, 98, $cyan); $textY = $y + 12;
-        $textY = $drawWrapped($page, 'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ\nСкидка 10% на приём врача-терапевта или врача общей практики, если все исследования были проведены в наших клиниках.', 53, $textY, 8, 485, $boldFontPath, [255,255,255], 10);
-        $drawWrapped($page, 'Скидка 10% предоставляется, если исследования из рекомендаций были сданы именно в наших клиниках.', 53, $textY + 10, 8, 485, $fontPath, [255,255,255], 10);
-        simple_pdf_draw_ttf_text($page, $fontPath, 8, 45, $y + 120, 'С уважением,', $scale, $ink); simple_pdf_draw_ttf_text($page, $boldFontPath, 8, 45, $y + 132, 'Команда специалистов Adaptogenzz', $scale, $cyan); simple_pdf_draw_ttf_text($page, $fontPath, 7, 45, $y + 144, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
+        $offerTitle = 'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ';
+        $offerText = 'Скидка 10% на приём врача-терапевта или врача общей практики, если все исследования были проведены в наших клиниках.';
+        $offerQualification = 'Скидка 10% предоставляется, если исследования из рекомендаций, которые входят в перечень наших услуг, были сданы именно в наших клиниках.';
+        $offerTitleLines = simple_pdf_wrap_text($offerTitle, 8, 485, $boldFontPath);
+        $offerTextLines = simple_pdf_wrap_text($offerText, 8, 485, $fontPath);
+        $offerQualificationLines = simple_pdf_wrap_text($offerQualification, 8, 485, $fontPath);
+        $offerHeight = 12 + count($offerTitleLines) * 10 + 3 + count($offerTextLines) * 10 + 30 + count($offerQualificationLines) * 10 + 12;
+        $rect($page, 41, $y, 513, $offerHeight, $cyan); $textY = $y + 12;
+        $textY = $drawWrapped($page, $offerTitle, 53, $textY, 8, 485, $boldFontPath, [255,255,255], 10);
+        $textY = $drawWrapped($page, $offerText, 53, $textY + 3, 8, 485, $fontPath, [255,255,255], 10);
+        $drawWrapped($page, $offerQualification, 53, $textY + 30, 8, 485, $fontPath, [255,255,255], 10);
+        $y += $offerHeight + 22;
+        simple_pdf_draw_ttf_text($page, $fontPath, 8, 45, $y, 'С уважением,', $scale, $ink); simple_pdf_draw_ttf_text($page, $boldFontPath, 8, 45, $y + 12, 'Команда специалистов Adaptogenzz', $scale, $cyan); simple_pdf_draw_ttf_text($page, $fontPath, 7, 45, $y + 24, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
     };
     $renderGroup($groups['recommendations'], 'Рекомендуемые анализы и обследования');
     $renderGroup($groups['steps'], 'Следующие шаги', true);
@@ -2665,7 +2688,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     $boldFontData = is_readable($boldFontPath) ? file_get_contents($boldFontPath) : $fontData;
     $cidToGidMap = $fontData !== '' ? simple_pdf_font_cid_to_gid_map($fontData) : '';
     $boldCidToGidMap = $boldFontData !== '' ? simple_pdf_font_cid_to_gid_map($boldFontData) : $cidToGidMap;
-    $logo = simple_pdf_png_info(__DIR__ . '/logo22.png') ?: simple_pdf_png_info(__DIR__ . '/logo11.png');
+    $logo = simple_pdf_png_info(__DIR__ . '/logo33.png');
     $aiBlocks = is_array($content) ? $content : [['text' => (string)$content, 'style' => 'paragraph']];
     $aiBlocks = array_map(function ($block) {
         if (!is_array($block)) $block = ['text' => (string)$block, 'style' => 'paragraph'];
@@ -2693,7 +2716,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
             $aiBlocks,
             $fontPath,
             is_readable($boldFontPath) ? $boldFontPath : $fontPath,
-            is_readable(__DIR__ . '/logo22.png') ? __DIR__ . '/logo22.png' : __DIR__ . '/logo11.png',
+            __DIR__ . '/logo33.png',
             $patientName,
             $patientSex
         );
