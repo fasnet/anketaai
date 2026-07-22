@@ -2532,94 +2532,102 @@ function simple_pdf_raster_image_stream($image) {
     return ['width' => $width, 'height' => $height, 'data' => gzcompress($rgb)];
 }
 
-function simple_pdf_draw_ttf_text($image, $fontPath, $fontSize, $x, $y, $text, $scale = 2) {
-    $black = imagecolorallocate($image, 0, 0, 0);
-    imagettftext($image, (int)round($fontSize * $scale), 0, (int)round($x * $scale), (int)round($y * $scale), $black, $fontPath, (string)$text);
+function simple_pdf_draw_ttf_text($image, $fontPath, $fontSize, $x, $y, $text, $scale = 2, $rgb = [20, 31, 45]) {
+    $color = imagecolorallocate($image, $rgb[0], $rgb[1], $rgb[2]);
+    imagettftext($image, (int)round($fontSize * $scale), 0, (int)round($x * $scale), (int)round($y * $scale), $color, $fontPath, (string)$text);
 }
 
-function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath = '') {
-    $scale = 2;
-    $pageWidth = 595;
-    $pageHeight = 842;
+function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath = '', $patientName = '', $patientSex = '') {
+    // The PDF is intentionally rendered as a raster document: it makes the
+    // layout and Cyrillic typography deterministic on servers without a PDF
+    // library or installed fonts. Coordinates below are A4 points at 72 dpi.
+    $scale = 2; $pageWidth = 595; $pageHeight = 842;
+    $cyan = [0, 174, 211]; $ink = [20, 31, 45]; $muted = [81, 97, 110];
     $pages = [];
-    $newPage = function ($showHeader = true) use (&$pages, $scale, $pageWidth, $pageHeight, $logoPath, $boldFontPath) {
-        $image = imagecreatetruecolor($pageWidth * $scale, $pageHeight * $scale);
-        $white = imagecolorallocate($image, 255, 255, 255);
-        imagefilledrectangle($image, 0, 0, imagesx($image), imagesy($image), $white);
-        if ($showHeader && is_readable($logoPath) && function_exists('imagecreatefrompng')) {
-            $logo = @imagecreatefrompng($logoPath);
-            if ($logo) {
-                imagealphablending($logo, true);
-                $logoWidth = 72;
-                $logoHeight = max(1, (int)round($logoWidth * (imagesy($logo) / max(1, imagesx($logo)))));
-                imagecopyresampled($image, $logo, 95 * $scale, 42 * $scale, 0, 0, $logoWidth * $scale, $logoHeight * $scale, imagesx($logo), imagesy($logo));
-                imagedestroy($logo);
-            }
-        }
-        if ($showHeader) {
-            $contactY = 54;
-            foreach (['Сеть клиник Adaptogenzz', 'Телефон: +7 (495) 642-49-26,', 'Почта: clinic@adaptogenzz.pro'] as $line) {
-                simple_pdf_draw_ttf_text($image, $boldFontPath, 10, 375, $contactY, $line, $scale);
-                $contactY += 14;
-            }
-        }
-        $pages[] = $image;
-        return $showHeader ? 180 : 42;
-    };
-
     $logoPath = is_readable($logoPath) ? $logoPath : '';
-    $y = $newPage(true);
-    $x = 40;
-    $maxWidth = 500;
-    foreach ($blocks as $blockIndex => $block) {
-        $style = $block['style'] ?? '';
-        $isHeading = $style === 'heading';
-        $isGreeting = $style === 'greeting';
-        $fontSize = 8;
-        $isCompact = !empty($block['compact']);
-        $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
-        $blockGap = 15;
-        $before = $blockIndex === 0 ? 0 : $blockGap;
-        $after = 0;
-        $y += $before;
-        foreach (simple_pdf_wrap_text($block['text'] ?? '', $fontSize, $maxWidth, $isHeading ? $boldFontPath : $fontPath) as $line) {
-            if ($y > $pageHeight - 42) $y = $newPage(false);
-            $lineX = $isGreeting ? max(40, (int)round(($pageWidth - simple_pdf_text_width($line, $fontSize)) / 2)) : $x;
-            simple_pdf_draw_ttf_text($pages[count($pages) - 1], $isHeading ? $boldFontPath : $fontPath, $fontSize, $lineX, $y, $line, $scale);
-            $y += $leading;
+    $newPage = function () use (&$pages, $scale, $pageWidth, $pageHeight) {
+        $image = imagecreatetruecolor($pageWidth * $scale, $pageHeight * $scale);
+        imagefilledrectangle($image, 0, 0, imagesx($image), imagesy($image), imagecolorallocate($image, 255, 255, 255));
+        $pages[] = $image;
+        return $image;
+    };
+    $rect = static function ($image, $x, $y, $width, $height, $rgb) use ($scale) {
+        imagefilledrectangle($image, $x * $scale, $y * $scale, ($x + $width) * $scale, ($y + $height) * $scale, imagecolorallocate($image, $rgb[0], $rgb[1], $rgb[2]));
+    };
+    $line = static function ($image, $x1, $y1, $x2, $y2, $rgb, $thickness = 1) use ($scale) {
+        $color = imagecolorallocate($image, $rgb[0], $rgb[1], $rgb[2]); imagesetthickness($image, $thickness * $scale);
+        imageline($image, $x1 * $scale, $y1 * $scale, $x2 * $scale, $y2 * $scale, $color);
+    };
+    $header = function ($image, $pageNo, $first = false) use ($scale, $logoPath, $boldFontPath, $fontPath, $cyan, $muted, $line) {
+        if ($first && $logoPath !== '' && function_exists('imagecreatefrompng')) {
+            $logo = @imagecreatefrompng($logoPath);
+            if ($logo) { imagealphablending($logo, true); $w = 176; $h = max(1, (int)round($w * imagesy($logo) / max(1, imagesx($logo)))); imagecopyresampled($image, $logo, 41*$scale, 24*$scale, 0, 0, $w*$scale, $h*$scale, imagesx($logo), imagesy($logo)); imagedestroy($logo); }
+            simple_pdf_draw_ttf_text($image, $boldFontPath, 7, 382, 38, 'СЕТЬ КЛИНИК ADAPTOGENZZ', $scale, $cyan);
+            simple_pdf_draw_ttf_text($image, $fontPath, 6, 371, 50, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
+            $line($image, 41, 73, 554, 73, $cyan, 2);
+        } else {
+            simple_pdf_draw_ttf_text($image, $boldFontPath, 7, 45, 26, 'ADAPTOGENZZ  ·  ПЕРСОНАЛЬНЫЙ ИНФОРМАЦИОННЫЙ ОБЗОР', $scale, $cyan);
+            $line($image, 41, 36, 554, 36, $cyan, 2);
         }
-        $y += $after;
+        $line($image, 41, 809, 554, 809, [208, 222, 227]);
+        simple_pdf_draw_ttf_text($image, $boldFontPath, 5.5, 320, 824, 'ADAPTOGENZZ  ·  ИНФОРМАЦИОННЫЙ ОБЗОР', $scale, $muted);
+        simple_pdf_draw_ttf_text($image, $fontPath, 5.5, 514, 824, 'Страница ' . $pageNo, $scale, $muted);
+    };
+    $drawWrapped = function ($image, $text, $x, $y, $fontSize, $maxWidth, $font, $color, $leading = null) use ($scale) {
+        $leading = $leading ?? ($fontSize + 3);
+        foreach (simple_pdf_wrap_text($text, $fontSize, $maxWidth, $font) as $textLine) { simple_pdf_draw_ttf_text($image, $font, $fontSize, $x, $y, $textLine, $scale, $color); $y += $leading; }
+        return $y;
+    };
+    $groups = ['observations' => [], 'recommendations' => [], 'steps' => []]; $group = 'observations';
+    foreach ($blocks as $block) {
+        $text = trim((string)($block['text'] ?? '')); if ($text === '') continue;
+        $style = $block['style'] ?? 'paragraph'; $lower = mb_strtolower($text, 'UTF-8');
+        if ($style === 'heading' && str_contains($lower, 'рекомендуем')) $group = 'recommendations';
+        if ($style === 'heading' && str_contains($lower, 'следующ')) $group = 'steps';
+        $groups[$group][] = ['text' => $text, 'style' => $style];
     }
+    $pageNo = 1; $page = $newPage(); $header($page, $pageNo, true); $y = 88;
+    simple_pdf_draw_ttf_text($page, $boldFontPath, 7, 42, $y, 'ПЕРСОНАЛЬНЫЙ ИНФОРМАЦИОННЫЙ ОБЗОР', $scale, $cyan); $y += 31;
+    $y = $drawWrapped($page, "Лабораторные исследования\nи следующие шаги", 42, $y, 23, 475, $boldFontPath, $ink, 27); $y += 7;
+    $line($page, 41, $y, 554, $y, $cyan, 2); $y += 27;
+    $y = $drawWrapped($page, response_pdf_greeting_word($patientSex) . ' ' . ($patientName !== '' ? $patientName : '________________________') . '!', 42, $y, 9, 500, $boldFontPath, $ink, 12); $y += 7;
+    $y = $drawWrapped($page, 'Благодарим вас за заполнение анкеты. На основе предоставленных вами сведений мы подготовили информационный обзор лабораторных и инструментальных методов исследования, которые могут быть актуальны при ваших симптомах и особенностях здоровья.', 42, $y, 8, 500, $fontPath, $ink, 10); $y += 6;
+    $rect($page, 41, $y, 513, 28, [230, 245, 249]); $line($page, 41, $y, 41, $y + 28, $cyan, 2);
+    simple_pdf_draw_ttf_text($page, $boldFontPath, 7, 51, $y + 10, 'ОБРАТИТЕ ВНИМАНИЕ', $scale, $cyan);
+    simple_pdf_draw_ttf_text($page, $fontPath, 7, 51, $y + 21, 'Настоящий обзор не является медицинским заключением, диагнозом или назначением.', $scale, $ink); $y += 43;
+    $y = $drawWrapped($page, 'Ниже приведён перечень анализов и диагностических процедур, о которых врачи часто упоминают в подобных ситуациях.', 42, $y, 8, 500, $fontPath, $ink, 10); $y += 8;
+    if ($groups['observations']) {
+        simple_pdf_draw_ttf_text($page, $boldFontPath, 11, 42, $y, 'Ключевые наблюдения', $scale, $cyan); $y += 10;
+        $rect($page, 41, $y, 3, 48, $cyan); $rect($page, 44, $y, 510, 48, [247, 247, 247]); $textY = $y + 11;
+        foreach ($groups['observations'] as $block) { if ($block['style'] === 'heading') continue; $textY = $drawWrapped($page, $block['text'], 52, $textY, 8, 490, $boldFontPath, $ink, 10); }
+    }
+    $renderGroup = function ($items, $heading, $special = false) use (&$pageNo, &$page, &$y, $newPage, $header, $drawWrapped, $boldFontPath, $fontPath, $cyan, $ink, $muted, $rect, $line, $scale) {
+        if (!$items && !$special) return; $pageNo++; $page = $newPage(); $header($page, $pageNo); $y = 63;
+        simple_pdf_draw_ttf_text($page, $boldFontPath, 12, 45, $y, $heading, $scale, $cyan); $y += 11; $line($page, 41, $y, 554, $y, $cyan, 1); $y += 21;
+        foreach ($items as $block) {
+            if ($y > 720) { $pageNo++; $page = $newPage(); $header($page, $pageNo); $y = 62; }
+            if ($block['style'] === 'heading') { $y += 3; $y = $drawWrapped($page, $block['text'], 45, $y, 9, 500, $boldFontPath, $ink, 12); $y += 3; continue; }
+            $y = $drawWrapped($page, $block['text'], 55, $y, 8, 488, $fontPath, $ink, 11); $y += 1;
+        }
+        if (!$special) return;
+        $y += 9; $rect($page, 41, $y, 3, 27, [238, 101, 45]); $rect($page, 44, $y, 510, 27, [232, 235, 240]);
+        simple_pdf_draw_ttf_text($page, $boldFontPath, 7, 52, $y + 10, 'ВАЖНО', $scale, [211, 78, 28]);
+        simple_pdf_draw_ttf_text($page, $fontPath, 7, 52, $y + 21, 'Перечень составлен как справочный материал на основании ваших ответов.', $scale, $ink); $y += 42;
+        $y = $drawWrapped($page, 'После того как вы получите результаты анализов (в любой лаборатории), вы можете записаться на приём к терапевту в нашу клинику для интерпретации данных и получения медицинских рекомендаций.', 45, $y, 8, 500, $fontPath, $ink, 10); $y += 9;
+        $rect($page, 41, $y, 513, 98, $cyan); $textY = $y + 12;
+        $textY = $drawWrapped($page, 'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ\nСкидка 10% на приём врача-терапевта или врача общей практики, если все исследования были проведены в наших клиниках.', 53, $textY, 8, 485, $boldFontPath, [255,255,255], 10);
+        $drawWrapped($page, 'Скидка 10% предоставляется, если исследования из рекомендаций были сданы именно в наших клиниках.', 53, $textY + 10, 8, 485, $fontPath, [255,255,255], 10);
+        simple_pdf_draw_ttf_text($page, $fontPath, 8, 45, $y + 120, 'С уважением,', $scale, $ink); simple_pdf_draw_ttf_text($page, $boldFontPath, 8, 45, $y + 132, 'Команда специалистов Adaptogenzz', $scale, $cyan); simple_pdf_draw_ttf_text($page, $fontPath, 7, 45, $y + 144, '+7 (495) 642-49-26  ·  clinic@adaptogenzz.pro', $scale, $muted);
+    };
+    $renderGroup($groups['recommendations'], 'Рекомендуемые анализы и обследования');
+    $renderGroup($groups['steps'], 'Следующие шаги', true);
+    if (!$groups['steps']) $renderGroup([], 'Следующие шаги', true);
 
-    $pageCount = count($pages);
-    $pageIds = [];
-    $contentIds = [];
-    $imageIds = [];
-    for ($i = 0; $i < $pageCount; $i++) {
-        $pageIds[] = 3 + ($i * 3);
-        $contentIds[] = 4 + ($i * 3);
-        $imageIds[] = 5 + ($i * 3);
-    }
-    $objects = [
-        1 => '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
-        2 => '2 0 obj << /Type /Pages /Kids [' . implode(' ', array_map(fn($id) => $id . ' 0 R', $pageIds)) . '] /Count ' . $pageCount . ' >> endobj',
-    ];
-    foreach ($pages as $i => $image) {
-        $name = '/Pg' . ($i + 1);
-        $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ' . $pageWidth . ' ' . $pageHeight . '] /Resources << /XObject << ' . $name . ' ' . $imageIds[$i] . ' 0 R >> >> /Contents ' . $contentIds[$i] . ' 0 R >> endobj';
-        $objects[$contentIds[$i]] = simple_pdf_stream_object($contentIds[$i], '', 'q ' . $pageWidth . ' 0 0 ' . $pageHeight . ' 0 0 cm ' . $name . ' Do Q');
-        $stream = simple_pdf_raster_image_stream($image);
-        imagedestroy($image);
-        $objects[$imageIds[$i]] = simple_pdf_stream_object($imageIds[$i], '/Type /XObject /Subtype /Image /Width ' . $stream['width'] . ' /Height ' . $stream['height'] . ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode', $stream['data']);
-    }
-    ksort($objects);
-    $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
-    $offsets = [0];
-    foreach ($objects as $id => $object) { $offsets[$id] = strlen($pdf); $pdf .= $object . "\n"; }
-    $xref = strlen($pdf);
-    $pdf .= "xref\n0 " . (max(array_keys($objects)) + 1) . "\n0000000000 65535 f \n";
-    for ($i = 1; $i <= max(array_keys($objects)); $i++) $pdf .= isset($offsets[$i]) ? sprintf("%010d 00000 n \n", $offsets[$i]) : "0000000000 65535 f \n";
-    return $pdf . "trailer << /Size " . (max(array_keys($objects)) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+    $pageCount = count($pages); $pageIds = []; $contentIds = []; $imageIds = [];
+    for ($i = 0; $i < $pageCount; $i++) { $pageIds[] = 3 + $i * 3; $contentIds[] = 4 + $i * 3; $imageIds[] = 5 + $i * 3; }
+    $objects = [1 => '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj', 2 => '2 0 obj << /Type /Pages /Kids [' . implode(' ', array_map(fn($id) => $id . ' 0 R', $pageIds)) . '] /Count ' . $pageCount . ' >> endobj'];
+    foreach ($pages as $i => $image) { $name = '/Pg' . ($i + 1); $objects[$pageIds[$i]] = $pageIds[$i] . ' 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << ' . $name . ' ' . $imageIds[$i] . ' 0 R >> >> /Contents ' . $contentIds[$i] . ' 0 R >> endobj'; $objects[$contentIds[$i]] = simple_pdf_stream_object($contentIds[$i], '', 'q 595 0 0 842 0 0 cm ' . $name . ' Do Q'); $stream = simple_pdf_raster_image_stream($image); imagedestroy($image); $objects[$imageIds[$i]] = simple_pdf_stream_object($imageIds[$i], '/Type /XObject /Subtype /Image /Width ' . $stream['width'] . ' /Height ' . $stream['height'] . ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode', $stream['data']); }
+    ksort($objects); $pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"; $offsets = [0]; foreach ($objects as $id => $object) { $offsets[$id] = strlen($pdf); $pdf .= $object . "\n"; } $xref = strlen($pdf); $pdf .= "xref\n0 " . (max(array_keys($objects)) + 1) . "\n0000000000 65535 f \n"; for ($i = 1; $i <= max(array_keys($objects)); $i++) $pdf .= isset($offsets[$i]) ? sprintf("%010d 00000 n \n", $offsets[$i]) : "0000000000 65535 f \n"; return $pdf . "trailer << /Size " . (max(array_keys($objects)) + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
 }
 
 function response_pdf_greeting_word($sex) {
@@ -2681,7 +2689,14 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
     ]);
 
     if (function_exists('imagettftext') && is_readable($fontPath)) {
-        return simple_pdf_raster_document($blocks, $fontPath, is_readable($boldFontPath) ? $boldFontPath : $fontPath, is_readable(__DIR__ . '/logo22.png') ? __DIR__ . '/logo22.png' : __DIR__ . '/logo11.png');
+        return simple_pdf_raster_document(
+            $aiBlocks,
+            $fontPath,
+            is_readable($boldFontPath) ? $boldFontPath : $fontPath,
+            is_readable(__DIR__ . '/logo22.png') ? __DIR__ . '/logo22.png' : __DIR__ . '/logo11.png',
+            $patientName,
+            $patientSex
+        );
     }
 
     $pageStreams = [];
