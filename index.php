@@ -3171,31 +3171,45 @@ function rnova_error_contains($result, $needle) {
     return mb_stripos((string)($result['error'] ?? ''), $needle, 0, 'UTF-8') !== false;
 }
 
-function rnova_find_patient_id($patient) {
+function rnova_patient_lookup_queries($patient) {
     $payload = rnova_patient_payload($patient);
     $queries = [];
-    $fullNameQuery = rnova_filter_payload([
+    // ФИО и дата рождения — основной идентификатор пациента. Не ищем только
+    // по ФИО, чтобы не привязать задачу однофамильцу.
+    $nameAndBirthDate = rnova_filter_payload([
         'last_name' => $payload['last_name'] ?? '',
         'first_name' => $payload['first_name'] ?? '',
-        'third_name' => $payload['third_name'] ?? '',
+        'birth_date' => $payload['birth_date'] ?? '',
     ]);
+    if (count($nameAndBirthDate) === 3) {
+        $queries[] = $nameAndBirthDate;
+    }
+    if (!empty($payload['mobile'])) {
+        $queries[] = ['mobile' => $payload['mobile']];
+    }
     if (!empty($payload['email'])) {
         $queries[] = ['email' => $payload['email']];
     }
-    if (count($fullNameQuery) >= 3) {
-        $queries[] = $fullNameQuery;
-    }
 
+    $uniqueQueries = [];
     foreach ($queries as $query) {
+        $key = json_encode($query, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($key !== false) $uniqueQueries[$key] = $query;
+    }
+    return array_values($uniqueQueries);
+}
+
+function rnova_find_patient_id($patient) {
+    foreach (rnova_patient_lookup_queries($patient) as $query) {
         $found = rnova_request('POST', 'getPatient', $query);
         if (!$found['ok']) {
             if ((int)($found['http'] ?? 0) >= 500) return $found;
             continue;
         }
         $patientId = rnova_response_id($found['data'] ?? []);
-        if ($patientId) return ['ok' => true, 'patient_id' => $patientId];
+        if ($patientId) return ['ok' => true, 'patient_id' => $patientId, 'created' => false];
     }
-    return ['ok' => true, 'patient_id' => null];
+    return ['ok' => true, 'patient_id' => null, 'created' => false];
 }
 
 function rnova_ensure_patient($response) {
@@ -3219,7 +3233,7 @@ function rnova_ensure_patient($response) {
     $patientId = rnova_response_id($created['data'] ?? []);
     if (!$patientId) return ['ok' => false, 'error' => 'RNOVA не вернула ID пациента.'];
 
-    return ['ok' => true, 'patient_id' => $patientId];
+    return ['ok' => true, 'patient_id' => $patientId, 'created' => true];
 }
 
 function create_rnova_task_for_response($response) {
@@ -3249,7 +3263,7 @@ function create_rnova_task_for_response($response) {
     if (!$taskId) {
         return ['ok' => false, 'error' => 'RNOVA создала задачу, но не вернула ID задачи.', 'patient_id' => $patientId, 'task' => $task['data']];
     }
-    return ['ok' => true, 'patient_id' => $patientId, 'task' => $task['data'], 'task_id' => $taskId];
+    return ['ok' => true, 'patient_id' => $patientId, 'patient_created' => !empty($patientResult['created']), 'task' => $task['data'], 'task_id' => $taskId];
 }
 
 function rnova_task_record($data, $taskId) {
@@ -3717,12 +3731,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
         if ($taskCreated) {
             // Store the new link before uploading. If RNOVA rejects the file,
             // a retry attaches to this task instead of creating a duplicate.
-            update_patient_response($response['id'], function ($item) use ($response) {
+            update_patient_response($response['id'], function ($item) use ($response, $task) {
                 $item['mis_sent_at'] = date('c');
                 $item['mis_patient_id'] = $response['mis_patient_id'];
                 $item['mis_task_id'] = $response['mis_task_id'];
                 $item['mis_task'] = $response['mis_task'];
-                $item['history'][] = ['date' => date('c'), 'event' => 'В RNOVA создана активная задача для анкеты'];
+                $item['history'][] = ['date' => date('c'), 'event' => !empty($task['patient_created'])
+                    ? 'В RNOVA создан пациент и активная задача для анкеты'
+                    : 'В RNOVA найден пациент и создана активная задача для анкеты'];
                 return $item;
             });
         }
@@ -3741,7 +3757,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
             return $item;
         });
     }
-    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана: ' . ($taskCreated ? 'создана задача RNOVA и ' : '') . 'PDF прикреплён к карточке пациента в RNOVA и связан с текущей задачей анкеты.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $patientAction = !empty($task['patient_created'] ?? false) ? 'создан пациент, ' : (!empty($taskCreated) ? 'найден пациент, ' : '');
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана: ' . ($taskCreated ? $patientAction . 'создана задача RNOVA и ' : '') . 'PDF прикреплён к карточке пациента в RNOVA и связан с текущей задачей анкеты.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
