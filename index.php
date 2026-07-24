@@ -2669,7 +2669,10 @@ function simple_pdf_raster_document($blocks, $fontPath, $boldFontPath, $logoPath
         simple_pdf_draw_ttf_text($page, $boldFontPath, 12, 45, $y, $heading, $scale, $cyan); $y += 21;
         foreach ($items as $block) {
             if ($y > 720) { $pageNo++; $page = $newPage(); $header($page, $pageNo); $y = 62; }
-            if ($block['style'] === 'heading') { $y += 3; $y = $drawWrapped($page, $block['text'], 45, $y, 9, 500, $boldFontPath, $ink, 12); $y += 3; continue; }
+            // Preserve headings entered by the doctor as distinct PDF sections.
+            // The additional spacing keeps a heading visually separated from the
+            // preceding recommendation, including after a page break.
+            if ($block['style'] === 'heading') { $y += 8; $y = $drawWrapped($page, $block['text'], 45, $y, 9, 500, $boldFontPath, $ink, 12); $y += 5; continue; }
             $y = $drawWrapped($page, $block['text'], 55, $y, 8, 488, $fontPath, $ink, 11); $y += 1;
         }
         if (!$special) return;
@@ -2807,7 +2810,7 @@ function simple_pdf_document($content, $title = 'Расшифровка анке
         $style = $block['style'] ?? '';
         $isHeading = $style === 'heading';
         $isGreeting = $style === 'greeting';
-        $fontSize = 8;
+        $fontSize = $isHeading ? 10 : 8;
         $isCompact = !empty($block['compact']);
         $leading = $isHeading || $isGreeting ? 13 : ($isCompact ? 11 : 12);
         $blockGap = 15;
@@ -3700,6 +3703,30 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
     if ($postedHtml !== '') {
         $response['ai_answer_html'] = sanitize_editor_html($postedHtml);
     }
+    $taskCreated = false;
+    if (!response_has_rnova_task($response)) {
+        $task = create_rnova_task_for_response($response);
+        if (!$task['ok']) {
+            echo json_encode($task + ['message' => $task['error'] ?? 'Не удалось создать задачу RNOVA.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            exit;
+        }
+        $response['mis_patient_id'] = $task['patient_id'] ?? null;
+        $response['mis_task_id'] = $task['task_id'] ?? null;
+        $response['mis_task'] = $task['task'] ?? null;
+        $taskCreated = empty($task['skipped']);
+        if ($taskCreated) {
+            // Store the new link before uploading. If RNOVA rejects the file,
+            // a retry attaches to this task instead of creating a duplicate.
+            update_patient_response($response['id'], function ($item) use ($response) {
+                $item['mis_sent_at'] = date('c');
+                $item['mis_patient_id'] = $response['mis_patient_id'];
+                $item['mis_task_id'] = $response['mis_task_id'];
+                $item['mis_task'] = $response['mis_task'];
+                $item['history'][] = ['date' => date('c'), 'event' => 'В RNOVA создана активная задача для анкеты'];
+                return $item;
+            });
+        }
+    }
     $sent = attach_response_pdf_to_rnova_task($response);
     if ($sent['ok']) {
         update_patient_response($response['id'], function ($item) use ($sent, $response) {
@@ -3708,12 +3735,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (postv('action') === 'ma
             $item['mis_sent_at'] = date('c');
             $item['mis_patient_id'] = $sent['patient_id'] ?? null;
             $item['mis_task_id'] = $sent['task_id'] ?? ($item['mis_task_id'] ?? null);
+            $item['mis_task'] = $response['mis_task'] ?? ($item['mis_task'] ?? null);
             $item['mis_file'] = $sent['file'] ?? null;
-            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к карточке пациента RNOVA и связан с активной задачей анкеты, задача не закрывалась'];
+            $item['history'][] = ['date' => date('c'), 'event' => 'PDF прикреплён к карточке пациента RNOVA и связан с задачей анкеты, задача не закрывалась'];
             return $item;
         });
     }
-    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана: PDF прикреплён к карточке пациента в RNOVA и связан с текущей задачей анкеты.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode($sent + ['message' => $sent['ok'] ? 'Анкета обработана: ' . ($taskCreated ? 'создана задача RNOVA и ' : '') . 'PDF прикреплён к карточке пациента в RNOVA и связан с текущей задачей анкеты.' : ($sent['error'] ?? 'Ошибка отправки в МИС.')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -4503,7 +4531,7 @@ $sections = apply_hint_config($sections, $hintConfig);
                     <h3 class="editor-title">Ответ ИИ <small>(можно редактировать)</small></h3>
                     <div class="editor-box">
                         <div class="editor-toolbar" role="toolbar" aria-label="Редактор ИИ-ответа">
-                            <button type="button" class="tool" data-cmd="undo">↶</button><button type="button" class="tool" data-cmd="redo">↷</button><button type="button" class="tool" data-cmd="bold"><b>B</b></button><button type="button" class="tool" data-cmd="italic"><i>I</i></button><button type="button" class="tool" data-cmd="underline"><u>U</u></button><button type="button" class="tool" data-cmd="insertUnorderedList">•</button><button type="button" class="tool" data-cmd="insertOrderedList">1.</button>
+                            <button type="button" class="tool" data-cmd="undo" title="Отменить" aria-label="Отменить">↶</button><button type="button" class="tool" data-cmd="redo" title="Повторить" aria-label="Повторить">↷</button><button type="button" class="tool" data-cmd="bold" title="Полужирный" aria-label="Полужирный"><b>B</b></button><button type="button" class="tool" data-cmd="italic" title="Курсив" aria-label="Курсив"><i>I</i></button><button type="button" class="tool" data-cmd="underline" title="Подчёркнутый" aria-label="Подчёркнутый"><u>U</u></button><button type="button" class="tool" data-cmd="formatBlock" data-value="h3" title="Заголовок" aria-label="Сделать заголовком">H</button><button type="button" class="tool" data-cmd="insertUnorderedList" title="Маркированный список" aria-label="Маркированный список">•</button><button type="button" class="tool" data-cmd="insertOrderedList" title="Нумерованный список" aria-label="Нумерованный список">1.</button>
                         </div>
                         <div class="editor-content" id="aiEditor" contenteditable="true"><?= $aiHtml ?></div>
                     </div>
@@ -5049,7 +5077,7 @@ $sections = apply_hint_config($sections, $hintConfig);
         editor.addEventListener('input', updateCount);
         document.querySelectorAll('.editor-toolbar [data-cmd]').forEach((button) => {
             button.addEventListener('click', () => {
-                document.execCommand(button.dataset.cmd, false, null);
+                document.execCommand(button.dataset.cmd, false, button.dataset.value || null);
                 editor.focus();
                 updateCount();
             });
